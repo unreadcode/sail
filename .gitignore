@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Xcode
+## User settings
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad
+
+## Build artifacts
+build/
+DerivedData/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+## Swift Package Manager
+.swiftpm/
+.build/
+Package.resolved
+
+## Various
+*.swp
+*.lock
+*~.nib
+
+## 内核二进制不入库：由 scripts/fetch-kernel.sh 在构建/打包前在线拉取并内置
+Sail/Resources/sing-box
+
+CLAUDE.md
