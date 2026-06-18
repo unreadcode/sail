@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-14   # Apple Silicon（arm64），与 app 目标架构一致
+    runs-on: macos-26   # macOS 26 + Xcode 26 SDK：链接新 SDK 才有液态玻璃 UI；旧 runner 不行
     steps:
       - uses: actions/checkout@v7
 
