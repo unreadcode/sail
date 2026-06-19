@@ -305,7 +305,8 @@ private struct RuleRow: View {
         .contentShape(Rectangle())
         .opacity(rule.enabled ? 1 : 0.45)
         .onHover { hovering = $0 }
-        .onTapGesture { onEdit() }
+        // 双击编辑：单击会拦截 List 的拖拽手势导致排序失效，故用双击；日常编辑用悬停出现的铅笔按钮
+        .onTapGesture(count: 2) { onEdit() }
     }
 
     private var actionBadge: some View {
