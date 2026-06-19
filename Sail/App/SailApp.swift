@@ -26,20 +26,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     @MainActor
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // 单例守卫：已有同 bundle id 实例在跑（含不同路径的副本）→ 唤起它、让它显示窗口，本实例立即 exit。
+        // 用 exit(0) 而非 NSApp.terminate：不跑任何收尾，避免本「多余实例」误把现有实例的系统代理撤掉。
+        let me = NSRunningApplication.current
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0.processIdentifier != me.processIdentifier && !$0.isTerminated }
+        if let other = others.first {
+            other.activate()
+            DistributedNotificationCenter.default().postNotificationName(Self.showWindowNotification, object: nil)
+            exit(0)
+        }
+
         if SettingsStore.shared.silentStart {
             NSApp.setActivationPolicy(.prohibited)
         }
     }
 
+    /// 多余实例通知现有实例显示主窗的跨进程通知名。
+    static let showWindowNotification = Notification.Name("com.unreadcode.Sail.showWindow")
+
     @MainActor
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
         SettingsStore.shared.applyAppearance()   // 恢复上次选择的主题外观
+        // 收到「多余实例」的跨进程请求时，显示主窗（让用户从启动台再点时看到现有实例）
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(handleShowWindowRequest),
+            name: Self.showWindowNotification, object: nil)
         Task { await AppUpdater.shared.check() }  // 静默检查新版本（结果在「设置→关于」展示）
         // 内核随 app 常驻：启动即拉起（已安装时）
         Task { await KernelRunner.shared.start() }
         LatencyTester.shared.restartAuto()       // 自动延迟检查（按设置）
         SubscriptionStore.shared.startAutoUpdate()  // 订阅自动更新（按各订阅间隔）
+
+        // SwiftUI 的 WindowGroup 窗口可能在启动后才创建、或重置我们设的 delegate；
+        // 监听「成为主窗口」事件每次重新挂 delegate，确保关闭拦截一定生效（否则关窗后 Dock 图标残留）。
+        NotificationCenter.default.addObserver(self, selector: #selector(attachToWindow(_:)),
+                                               name: NSWindow.didBecomeMainNotification, object: nil)
 
         let silent = SettingsStore.shared.silentStart
         DispatchQueue.main.async { [weak self] in
@@ -51,6 +74,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                 NSApp.setActivationPolicy(.accessory)   // 从 prohibited 切回，恢复托盘交互
             }
         }
+    }
+
+    /// 任何窗口成为主窗口时，把它记为主窗并挂上关闭拦截 delegate。
+    @objc private func attachToWindow(_ note: Notification) {
+        guard let w = note.object as? NSWindow, w.canBecomeMain else { return }
+        mainWindow = w
+        if !(w.delegate is AppDelegate) { w.delegate = self }
+    }
+
+    /// 多余实例请求 → 显示主窗。
+    @objc private func handleShowWindowRequest() {
+        showMainWindow()
     }
 
     // 点 Dock 图标 / 重新打开 → 显示主窗
