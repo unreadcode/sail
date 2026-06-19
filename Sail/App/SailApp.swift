@@ -94,8 +94,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
         // 有新版本：置顶高亮一个下载入口（菜单栏常驻，比埋在设置里更易被看到）
         let updater = AppUpdater.shared
-        if updater.updateAvailable, let v = updater.latest?.version {
-            let item = trayItem("🆕 发现新版本 v\(v)，点击下载", #selector(downloadUpdateFromTray))
+        if updater.installing {
+            let item = NSMenuItem(title: "⏳ 正在下载并安装更新…", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item); menu.addItem(.separator())
+        } else if updater.updateAvailable, let v = updater.latest?.version {
+            let item = trayItem("🆕 发现新版本 v\(v)，点击更新", #selector(downloadUpdateFromTray))
             menu.addItem(item)
             menu.addItem(.separator())
         }
@@ -177,7 +181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     @objc private func downloadUpdateFromTray() {
-        Task { @MainActor in AppUpdater.shared.openDownload() }
+        Task { @MainActor in await AppUpdater.shared.downloadAndInstall() }
     }
 
     @objc private func quitApp() { NSApp.terminate(nil) }

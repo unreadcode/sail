@@ -106,4 +106,10 @@ PY
 
 rm -f "$OUT"
 APP_PATH="$APP" BG_PATH="$BG" "$VENV/bin/dmgbuild" -s "$SETTINGS" "$VOL" "$OUT"
-echo "✓ 完成：$OUT ($(du -h "$OUT" | cut -f1))"
+echo "✓ DMG：$OUT ($(du -h "$OUT" | cut -f1))"
+
+# 额外产出 Sail.app.zip，供 app 内自动更新下载（ditto 保留符号链接 / 资源叉 / 签名）
+ZIP="$(dirname "$OUT")/$APP_NAME.app.zip"
+rm -f "$ZIP"
+ditto -c -k --keepParent "$APP" "$ZIP"
+echo "✓ ZIP：$ZIP ($(du -h "$ZIP" | cut -f1))"

@@ -648,14 +648,21 @@ private struct AboutCard: View {
     }
 
     @ViewBuilder private var updateStatus: some View {
-        if updater.checking {
+        if updater.installing {
+            HStack(spacing: 6) { Spinner(size: 12); Text("下载并安装中…").foregroundStyle(.secondary) }
+        } else if updater.checking {
             HStack(spacing: 6) { Spinner(size: 12); Text("检查中…").foregroundStyle(.secondary) }
         } else if updater.updateAvailable, let v = updater.latest?.version {
-            Button { updater.openDownload() } label: {
-                Label("发现新版本 v\(v)，去下载", systemImage: "arrow.down.circle.fill")
-                    .labelStyle(.titleAndIcon).fontWeight(.medium)
+            HStack(spacing: 8) {
+                if let err = updater.installError {
+                    Text(err).font(.caption).foregroundStyle(.red).lineLimit(1)
+                }
+                Button { Task { await updater.downloadAndInstall() } } label: {
+                    Label("更新到 v\(v)", systemImage: "arrow.down.circle.fill")
+                        .labelStyle(.titleAndIcon).fontWeight(.medium)
+                }
+                .buttonStyle(.borderedProminent).controlSize(.small)
             }
-            .buttonStyle(.borderedProminent).controlSize(.small)
         } else if updater.lastError != nil {
             Button("检查失败，重试") { Task { await updater.check() } }.controlSize(.small)
         } else if updater.latest != nil {
