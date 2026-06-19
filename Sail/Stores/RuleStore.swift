@@ -5,6 +5,7 @@ import Observation
 enum RuleMatch: String, Codable, CaseIterable, Identifiable {
     case domainSuffix, domainKeyword, domain, ipCIDR, geosite, geoip
     case processName, port, proto
+    case ruleSetURL
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -17,6 +18,7 @@ enum RuleMatch: String, Codable, CaseIterable, Identifiable {
         case .processName: "进程名"
         case .port: "端口"
         case .proto: "协议"
+        case .ruleSetURL: "规则集 URL"
         }
     }
     var singBoxKey: String {
@@ -25,7 +27,7 @@ enum RuleMatch: String, Codable, CaseIterable, Identifiable {
         case .domainKeyword: "domain_keyword"
         case .domain: "domain"
         case .ipCIDR: "ip_cidr"
-        case .geosite, .geoip: "rule_set"
+        case .geosite, .geoip, .ruleSetURL: "rule_set"
         case .processName: "process_name"
         case .port: "port"
         case .proto: "protocol"
@@ -42,6 +44,7 @@ enum RuleMatch: String, Codable, CaseIterable, Identifiable {
         case .processName: "Telegram / qBittorrent（可逗号分隔多个）"
         case .port: "443 / 80,443 / 6881-6889"
         case .proto: "tls / http / quic / bittorrent / dns"
+        case .ruleSetURL: "https://example.com/rules/ads.srs"
         }
     }
     /// 多个值的输入说明（逗号分隔）。
@@ -50,6 +53,7 @@ enum RuleMatch: String, Codable, CaseIterable, Identifiable {
         case .processName: "应用进程名（含 .app 后缀或可执行名），多个用逗号分隔。"
         case .port: "目标端口；单个、逗号分隔多个，或 起-止 区间（如 6881-6889）。"
         case .proto: "嗅探出的应用层协议，多个用逗号分隔。"
+        case .ruleSetURL: "远程 rule-set 下载地址（.srs 二进制 / .json 源格式），自动下载并参与分流。下载经当前代理。"
         default: nil
         }
     }
@@ -147,6 +151,9 @@ final class RuleStore {
                 dict = [:]
                 if !ports.isEmpty { dict["port"] = ports }
                 if !ranges.isEmpty { dict["port_range"] = ranges }
+            case .ruleSetURL:
+                guard let tag = Self.ruleSetTag(v) else { continue }
+                dict = ["rule_set": [tag]]
             default:
                 dict = [r.match.singBoxKey: [v]]
             }
@@ -217,6 +224,39 @@ final class RuleStore {
             out.append(["type": "remote", "tag": tag, "format": "binary", "url": url, "download_detour": detour])
         }
         return out
+    }
+
+    /// 用户自定义远程规则集（ruleSetURL）需要的 rule_set 定义（去重）；下载走代理（无代理则直连）。
+    func customRuleSets(hasProxy: Bool) -> [[String: Any]] {
+        let detour = hasProxy ? "proxy" : "direct"
+        var seen = Set<String>()
+        var out: [[String: Any]] = []
+        for r in rules where r.enabled && r.match == .ruleSetURL {
+            if r.action == .proxy && !hasProxy { continue }
+            guard let url = Self.normalizedURL(r.value), let tag = Self.ruleSetTag(url) else { continue }
+            guard seen.insert(tag).inserted else { continue }
+            // .json 用 source 格式，其余（.srs 等）按 binary
+            let format = url.lowercased().hasSuffix(".json") ? "source" : "binary"
+            out.append(["type": "remote", "tag": tag, "format": format, "url": url, "download_detour": detour])
+        }
+        return out
+    }
+
+    /// 由 URL 生成稳定且合法的 rule_set tag（FNV-1a-32 → "user-<hex>"），
+    /// 保证 singBoxRules 引用与 customRuleSets 定义在同一份配置里一致。
+    private static func ruleSetTag(_ s: String) -> String? {
+        guard let url = normalizedURL(s) else { return nil }
+        var hash: UInt32 = 2166136261
+        for b in url.utf8 { hash = (hash ^ UInt32(b)) &* 16777619 }
+        return "user-" + String(hash, radix: 16)
+    }
+
+    /// 校验并规整为 http(s) URL；非法返回 nil（避免拼出畸形配置导致整体启动失败）。
+    private static func normalizedURL(_ s: String) -> String? {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard let u = URL(string: t), let scheme = u.scheme?.lowercased(),
+              scheme == "http" || scheme == "https", u.host != nil else { return nil }
+        return t
     }
 
     private func persistAndApply() {

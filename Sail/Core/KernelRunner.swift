@@ -410,12 +410,15 @@ final class KernelRunner {
             rules.insert(contentsOf: userRules, at: prefix)
             route["rules"] = rules
         }
-        // geo 规则需要对应的远程 rule_set 定义，合并进 route.rule_set（去重）
-        let geoSets = RuleStore.shared.geoRuleSets(hasProxy: hasProxy)
-        if !geoSets.isEmpty {
+        // geo 分类 + 用户远程规则集，都需要对应的远程 rule_set 定义，合并进 route.rule_set（按 tag 去重）
+        let extraSets = RuleStore.shared.geoRuleSets(hasProxy: hasProxy)
+            + RuleStore.shared.customRuleSets(hasProxy: hasProxy)
+        if !extraSets.isEmpty {
             var sets = (route["rule_set"] as? [[String: Any]]) ?? []
-            let tags = Set(sets.compactMap { $0["tag"] as? String })
-            sets.append(contentsOf: geoSets.filter { !tags.contains($0["tag"] as? String ?? "") })
+            var tags = Set(sets.compactMap { $0["tag"] as? String })
+            for s in extraSets where tags.insert(s["tag"] as? String ?? "").inserted {
+                sets.append(s)
+            }
             route["rule_set"] = sets
         }
         config["route"] = route
