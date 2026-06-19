@@ -348,10 +348,15 @@ final class KernelRunner {
         ]
         if isTun {
             let t = settings.tun
+            // TUN 仅默认通告 IPv4 地址；IPv6 地址只在用户启用 IPv6（DNS 非 ipv4_only）时才加。
+            // 否则 macOS 会把 IPv6 流量塞进 TUN，而本应用默认无 IPv6 出口 → 既「连上无数据」，
+            // 还会让发往 TUN 自身 ULA 网关的 UDP 命中 ip_is_private 判直连而回环 TUN，导致 CPU 空转、上传虚高。
+            var tunAddress = ["172.18.0.1/30"]
+            if settings.dnsStrategy != "ipv4_only" { tunAddress.append("fdfe:dcba:9876::1/126") }
             var tunIn: [String: Any] = [
                 "type": "tun",
                 "tag": "tun-in",
-                "address": ["172.18.0.1/30", "fdfe:dcba:9876::1/126"],
+                "address": tunAddress,
                 "auto_route": t.autoRoute,
                 "strict_route": t.strictRoute,
                 "stack": t.stack,
