@@ -221,7 +221,12 @@ final class RuleStore {
                 url = "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-\(v).srs"
             }
             guard seen.insert(tag).inserted else { continue }
-            out.append(["type": "remote", "tag": tag, "format": "binary", "url": url, "download_detour": detour])
+            // 本地优先：已内置/已下载到本地的分类（如 geosite-category-ads-all、geo*-cn）用 local，免去启动远程下载（避免节点不通时内核起不来）
+            if let local = GeoData.localRuleSet(tag) {
+                out.append(["type": "local", "tag": tag, "format": "binary", "path": local.path])
+            } else {
+                out.append(["type": "remote", "tag": tag, "format": "binary", "url": url, "download_detour": detour])
+            }
         }
         return out
     }
@@ -283,7 +288,10 @@ final class RuleStore {
         if !UserDefaults.standard.bool(forKey: key) {
             UserDefaults.standard.set(true, forKey: key)
             if rules.isEmpty {
-                rules = [RoutingRule(match: .geoip, value: "cn", action: .direct)]
+                rules = [
+                    RoutingRule(match: .geoip, value: "cn", action: .direct),          // 国内 IP 直连
+                    RoutingRule(match: .geosite, value: "category-ads-all", action: .reject),  // 广告/追踪拦截（内置本地规则集）
+                ]
                 save()
             }
         }

@@ -28,17 +28,26 @@ final class GeoData {
         return fm.fileExists(atPath: geositePath.path) && fm.fileExists(atPath: geoipPath.path)
     }
 
-    /// 首次运行把 app 内置的 geo 规则集播种到本地。
-    /// 这样 makeConfig 一开始就用本地 rule_set，无需启动时经（可能不通的）节点下载 geo——
+    /// 某规则集 tag（如 geosite-category-ads-all / geoip-cn）的本地 .srs 路径，存在才返回。
+    /// 供「本地优先」：已内置/已下载到本地的分类用 local rule_set，免去启动时经节点远程下载。
+    nonisolated static func localRuleSet(_ tag: String) -> URL? {
+        let p = dir.appendingPathComponent("\(tag).srs")
+        return FileManager.default.fileExists(atPath: p.path) ? p : nil
+    }
+
+    /// 首次运行把 app 内置的 geo 规则集（包内所有 geosite-*/geoip-*.srs）播种到本地。
+    /// 这样对应分类一开始就用本地 rule_set，无需启动时经（可能不通的）节点下载——
     /// 否则该下载失败会被 sing-box 当致命错误，导致内核起不来、陷入重启循环。用户仍可在设置里「更新」覆盖。
     nonisolated static func seedFromBundleIfNeeded() {
         let fm = FileManager.default
-        let items = [("geosite-cn", geositePath), ("geoip-cn", geoipPath)]
-        guard items.contains(where: { !fm.fileExists(atPath: $0.1.path) }) else { return }
+        let bundled = (Bundle.main.urls(forResourcesWithExtension: "srs", subdirectory: nil) ?? [])
+            .filter { $0.lastPathComponent.hasPrefix("geosite-") || $0.lastPathComponent.hasPrefix("geoip-") }
+        guard bundled.contains(where: { !fm.fileExists(atPath: dir.appendingPathComponent($0.lastPathComponent).path) })
+        else { return }
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        for (name, dest) in items where !fm.fileExists(atPath: dest.path) {
-            guard let src = Bundle.main.url(forResource: name, withExtension: "srs") else { continue }
-            try? fm.copyItem(at: src, to: dest)
+        for src in bundled {
+            let dest = dir.appendingPathComponent(src.lastPathComponent)
+            if !fm.fileExists(atPath: dest.path) { try? fm.copyItem(at: src, to: dest) }
         }
     }
 
