@@ -4,6 +4,9 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh-Hans</string>
+	<!-- 禁止同一 app 多实例（挡 open -n 等）；不同路径副本另由运行时守卫拦截 -->
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
 	<key>CFBundleLocalizations</key>
 	<array>
 		<string>zh-Hans</string>
