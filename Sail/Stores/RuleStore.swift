@@ -99,6 +99,18 @@ final class RuleStore {
 
     func remove(_ id: UUID) { rules.removeAll { $0.id == id }; persistAndApply() }
 
+    /// 拖拽调序：顺序即匹配优先级（自上而下）。
+    /// 手写实现，避免在 Store 里依赖 SwiftUI 的 move(fromOffsets:toOffset:)。
+    func move(from source: IndexSet, to destination: Int) {
+        let moving = source.sorted().map { rules[$0] }
+        let remaining = rules.enumerated().filter { !source.contains($0.offset) }.map(\.element)
+        let insertAt = destination - source.filter { $0 < destination }.count
+        var result = remaining
+        result.insert(contentsOf: moving, at: min(max(insertAt, 0), result.count))
+        rules = result
+        persistAndApply()
+    }
+
     func setEnabled(_ id: UUID, _ on: Bool) {
         guard let i = rules.firstIndex(where: { $0.id == id }) else { return }
         rules[i].enabled = on

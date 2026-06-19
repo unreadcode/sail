@@ -11,25 +11,26 @@ struct RulesView: View {
             if store.rules.isEmpty {
                 emptyState
             } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("自定义规则优先于内置分流，自上而下匹配。改动即时生效（重启内核）。")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .padding(.horizontal, 2)
-                        Card(padding: 0) {
-                            VStack(spacing: 0) {
-                                ForEach(Array(store.rules.enumerated()), id: \.element.id) { idx, rule in
-                                    if idx > 0 { Divider().padding(.leading, 16) }
-                                    RuleRow(rule: rule, onEdit: { editing = rule })
-                                }
-                            }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("自定义规则优先于内置分流，自上而下匹配；拖动可调整优先级。改动即时生效（重启内核）。")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .padding(.horizontal, 26).padding(.top, 18).padding(.bottom, 12)
+                    List {
+                        ForEach(store.rules) { rule in
+                            RuleRow(rule: rule, onEdit: { editing = rule })
+                                .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 0))
+                                .listRowSeparator(.hidden)
+                                .listRowBackground(Color.clear)
                         }
+                        .onMove { store.move(from: $0, to: $1) }
                     }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .environment(\.defaultMinListRowHeight, 0)
                     .frame(maxWidth: 720)
                     .frame(maxWidth: .infinity)
-                    .padding(24)
+                    .padding(.horizontal, 24).padding(.bottom, 16)
                 }
-                .scrollIndicators(.hidden)
             }
         }
         .toolbar {
@@ -79,6 +80,10 @@ private struct RuleRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11))
+                .foregroundStyle(hovering ? .secondary : .tertiary)
+                .help("拖动调整优先级")
             Toggle("", isOn: Binding(get: { rule.enabled }, set: { store.setEnabled(rule.id, $0) }))
                 .labelsHidden().toggleStyle(.switch).controlSize(.mini)
             VStack(alignment: .leading, spacing: 2) {
@@ -96,7 +101,15 @@ private struct RuleRow: View {
                     .buttonStyle(.borderless).help("删除")
             }
         }
-        .padding(.horizontal, 16).padding(.vertical, 11)
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(hovering ? 0.8 : 0.4), lineWidth: 1)
+        )
         .contentShape(Rectangle())
         .opacity(rule.enabled ? 1 : 0.45)
         .onHover { hovering = $0 }
