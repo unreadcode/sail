@@ -17,16 +17,11 @@ enum HelperManager {
     /// 是否已安装（plist 在位即认为装过；可读，无需 root）。
     nonisolated static var isInstalled: Bool { FileManager.default.fileExists(atPath: plistDest) }
 
-    /// 安装：弹一次管理员授权，装好后验证 helper 能 ping 通。
+    /// 安装：弹一次管理员授权（所有命令 inline 进 osascript，不落任何临时脚本 → 无 TOCTOU），装好后验证 helper 能 ping 通。
     static func install() async -> Bool {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: embeddedHelper), let singbox = bundledSingBox else { return false }
+        guard FileManager.default.fileExists(atPath: embeddedHelper), let singbox = bundledSingBox else { return false }
 
-        let tmp = fm.temporaryDirectory.appendingPathComponent("sail-helper-\(UUID().uuidString)")
-        try? fm.createDirectory(at: tmp, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        defer { try? fm.removeItem(at: tmp) }
-
-        // plist（注入安装者 uid，仅该用户可连 helper）
+        // plist 注入安装者 uid（仅该用户可连 helper）；base64 编码后内联，规避引号/换行的多层转义
         let plist = """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -39,46 +34,39 @@ enum HelperManager {
           <key>RunAtLoad</key><true/>
         </dict></plist>
         """
-        let plistTmp = tmp.appendingPathComponent("helper.plist")
-        let scriptTmp = tmp.appendingPathComponent("install.sh")
-        guard (try? plist.write(to: plistTmp, atomically: true, encoding: .utf8)) != nil,
-              (try? installScript(singbox: singbox, plistTmp: plistTmp.path).write(to: scriptTmp, atomically: true, encoding: .utf8)) != nil
-        else { return false }
+        let b64 = Data(plist.utf8).base64EncodedString()
+        let cmd = [
+            "set -e",
+            "mkdir -p \(shq(supportDir))",
+            "cp \(shq(singbox)) \(shq(singboxDest))",
+            "chown root:wheel \(shq(supportDir)) \(shq(singboxDest))",
+            "chmod 0755 \(shq(supportDir)) \(shq(singboxDest))",
+            "mkdir -p /Library/PrivilegedHelperTools",
+            "cp \(shq(embeddedHelper)) \(shq(helperDest))",
+            "chown root:wheel \(shq(helperDest))",
+            "chmod 0755 \(shq(helperDest))",
+            "echo \(shq(b64)) | /usr/bin/base64 -D > \(shq(plistDest))",
+            "chown root:wheel \(shq(plistDest))",
+            "chmod 0644 \(shq(plistDest))",
+            "launchctl bootout system \(shq(plistDest)) 2>/dev/null || true",
+            "launchctl bootstrap system \(shq(plistDest))",
+        ].joined(separator: " ; ")
 
-        guard await runAdmin("/bin/sh " + shq(scriptTmp.path)) else { return false }
+        guard await runAdmin(cmd) else { return false }
         // 等 launchd 拉起 helper 并能 ping
         for _ in 0..<25 { if await SailHelperClient.ping() { return true }; try? await Task.sleep(for: .milliseconds(200)) }
         return false
     }
 
-    /// 卸载：bootout + 删除 helper / plist / root-only 数据。
+    /// 卸载：bootout + 删除 helper / plist / root-only 数据（同样全 inline）。
     static func uninstall() async -> Bool {
-        let script = """
-        launchctl bootout system \(shq(plistDest)) 2>/dev/null || true
-        rm -f \(shq(plistDest))
-        rm -f \(shq(helperDest))
-        rm -rf \(shq(supportDir))
-        """
-        return await runAdmin("/bin/sh -c " + shq(script))
-    }
-
-    // MARK: 私有
-
-    private static func installScript(singbox: String, plistTmp: String) -> String {
-        """
-        set -e
-        mkdir -p \(shq(supportDir))
-        cp \(shq(singbox)) \(shq(singboxDest))
-        chown root:wheel \(shq(supportDir)) \(shq(singboxDest))
-        chmod 0755 \(shq(supportDir)) \(shq(singboxDest))
-        mkdir -p /Library/PrivilegedHelperTools
-        cp \(shq(embeddedHelper)) \(shq(helperDest))
-        chown root:wheel \(shq(helperDest)); chmod 0755 \(shq(helperDest))
-        cp \(shq(plistTmp)) \(shq(plistDest))
-        chown root:wheel \(shq(plistDest)); chmod 0644 \(shq(plistDest))
-        launchctl bootout system \(shq(plistDest)) 2>/dev/null || true
-        launchctl bootstrap system \(shq(plistDest))
-        """
+        let cmd = [
+            "launchctl bootout system \(shq(plistDest)) 2>/dev/null || true",
+            "rm -f \(shq(plistDest))",
+            "rm -f \(shq(helperDest))",
+            "rm -rf \(shq(supportDir))",
+        ].joined(separator: " ; ")
+        return await runAdmin(cmd)
     }
 
     /// 把字符串安全包进 shell 单引号（防 root 下命令注入）。
