@@ -30,6 +30,8 @@ final class AppUpdater {
     enum InstallPhase: Equatable { case downloading, extracting, restarting }
     private(set) var installPhase: InstallPhase = .downloading
     private(set) var downloadProgress = 0.0   // 0…1
+    private(set) var downloadedBytes: Int64 = 0   // 已下载字节
+    private(set) var totalBytes: Int64 = 0        // 总字节（响应未给时为 0）
     /// 用户已忽略的版本（本次运行内不再提示）。
     private var dismissedVersion: String?
     /// 更新进度小窗。
@@ -68,13 +70,18 @@ final class AppUpdater {
         }
         guard !installing else { return }
         installing = true; installError = nil; userCancelled = false
-        installPhase = .downloading; downloadProgress = 0
+        installPhase = .downloading; downloadProgress = 0; downloadedBytes = 0; totalBytes = 0
         presentProgressWindow()
         do {
             // 1) 下载（带进度回调，可取消）
             var req = URLRequest(url: url, timeoutInterval: 300)
             req.setValue("Sail", forHTTPHeaderField: "User-Agent")
-            let dl = ProgressDownloader { p in Task { @MainActor in AppUpdater.shared.downloadProgress = p } }
+            let dl = ProgressDownloader { p, written, total in
+                Task { @MainActor in
+                    let u = AppUpdater.shared
+                    u.downloadProgress = p; u.downloadedBytes = written; u.totalBytes = total
+                }
+            }
             downloader = dl
             let zip = try await dl.run(req)
             downloader = nil
@@ -232,9 +239,9 @@ private final class ProgressDownloader: NSObject, URLSessionDownloadDelegate, @u
     private var continuation: CheckedContinuation<URL, Error>?
     private var session: URLSession?
     private var task: URLSessionDownloadTask?
-    private let onProgress: @Sendable (Double) -> Void
+    private let onProgress: @Sendable (Double, Int64, Int64) -> Void
 
-    init(onProgress: @escaping @Sendable (Double) -> Void) { self.onProgress = onProgress }
+    init(onProgress: @escaping @Sendable (Double, Int64, Int64) -> Void) { self.onProgress = onProgress }
 
     func run(_ req: URLRequest) async throws -> URL {
         try await withCheckedThrowingContinuation { cont in
@@ -253,7 +260,7 @@ private final class ProgressDownloader: NSObject, URLSessionDownloadDelegate, @u
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData _: Int64, totalBytesWritten written: Int64, totalBytesExpectedToWrite total: Int64) {
-        if total > 0 { onProgress(min(1, Double(written) / Double(total))) }
+        if total > 0 { onProgress(min(1, Double(written) / Double(total)), written, total) }
     }
 
     func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {

@@ -23,7 +23,7 @@ struct UpdateProgressView: View {
                 VStack(spacing: 8) {
                     ProgressView(value: updater.downloadProgress)
                     HStack {
-                        Text("下载中…").font(.caption).foregroundStyle(.secondary)
+                        Text(sizeText).font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Text("\(Int(updater.downloadProgress * 100))%")
                             .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
@@ -42,6 +42,12 @@ struct UpdateProgressView: View {
         }
         .padding(20)
         .frame(width: 340)
+    }
+
+    /// 「已下载 / 总大小」；总大小未知时退回「下载中…」。
+    private var sizeText: String {
+        guard updater.totalBytes > 0 else { return "下载中…" }
+        return "\(formatBytes(Double(updater.downloadedBytes))) / \(formatBytes(Double(updater.totalBytes)))"
     }
 
     private func phaseBar(_ text: String) -> some View {
