@@ -18,6 +18,8 @@
 
 [English](README.md) | **简体中文**
 
+<img src="docs/screenshot-overview.png" alt="Sail 概览" width="760">
+
 </div>
 
 ---

@@ -18,6 +18,8 @@ System proxy / TUN · Subscriptions · Rule-based routing · Live traffic & conn
 
 **English** | [简体中文](README.zh-CN.md)
 
+<img src="docs/screenshot-overview.png" alt="Sail overview" width="760">
+
 </div>
 
 ---
