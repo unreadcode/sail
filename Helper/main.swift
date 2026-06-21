@@ -10,6 +10,7 @@ let kSocketPath = "/var/run/com.unreadcode.Sail.helper.sock"
 let kSupportDir = "/Library/Application Support/Sail"
 let kSingBoxPath = kSupportDir + "/sing-box"      // root 所有的可信副本
 let kConfigPath  = kSupportDir + "/config.run.json"
+let kLogPath     = kSupportDir + "/kernel.log"    // 内核输出（0644，app 端 tail 读）
 
 // 允许的调用方 uid，由 plist 的 --uid 传入
 var allowedUID: uid_t = {
@@ -53,11 +54,22 @@ func startSingBox(_ configJSON: String) -> (Bool, String) {
     chown(kConfigPath, 0, 0); chmod(kConfigPath, 0o600)
 
     stopSingBox()
+
+    // 预建日志文件并设为用户可读，把内核 stdout/stderr 重定向进去（app 端 tail 显示）
+    let lfd = open(kLogPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+    if lfd >= 0 { close(lfd) }
+    chmod(kLogPath, 0o644)
+    var fa: posix_spawn_file_actions_t?
+    posix_spawn_file_actions_init(&fa)
+    posix_spawn_file_actions_addopen(&fa, 1, kLogPath, O_WRONLY | O_APPEND, 0)
+    posix_spawn_file_actions_adddup2(&fa, 1, 2)   // stderr 并入同一文件
+    defer { posix_spawn_file_actions_destroy(&fa) }
+
     var pid: pid_t = 0
     let argv: [UnsafeMutablePointer<CChar>?] =
         [strdup(kSingBoxPath), strdup("run"), strdup("-c"), strdup(kConfigPath), nil]
     defer { for p in argv where p != nil { free(p) } }
-    let rc = posix_spawn(&pid, kSingBoxPath, nil, nil, argv, environ)
+    let rc = posix_spawn(&pid, kSingBoxPath, &fa, nil, argv, environ)
     guard rc == 0 else { return (false, "spawn 失败(\(rc))") }
     childPID = pid
     return (true, "")

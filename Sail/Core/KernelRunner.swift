@@ -33,6 +33,8 @@ final class KernelRunner {
     // 内核异常退出后的自动重启：限次 + 退避，避免坏配置导致的无限快速重启循环
     private var crashCount = 0
     private var autoRestartTask: Task<Void, Never>?
+    private var helperWatchTask: Task<Void, Never>?   // helper 模式：轮询内核存活，崩溃则重启
+    private var helperLogTask: Task<Void, Never>?      // helper 模式：tail 内核日志文件
     private static let maxAutoRestarts = 3
 
     private init() {}
@@ -98,6 +100,8 @@ final class KernelRunner {
                 startedAt = Date()
                 runState = .running
                 appendLogs(["[TUN] 内核已由特权 helper 以 root 启动"])
+                startHelperLogTail()   // tail root 内核日志
+                startHelperWatch()     // 监测崩溃并自动重启
             } else {
                 ranViaHelper = false
                 try writeConfig()
@@ -178,6 +182,8 @@ final class KernelRunner {
 
     func stop() async {
         autoRestartTask?.cancel(); autoRestartTask = nil   // 用户主动停止，取消待重启
+        helperWatchTask?.cancel(); helperWatchTask = nil   // 停监测，避免把主动停止误判为崩溃
+        helperLogTask?.cancel(); helperLogTask = nil
         crashCount = 0
         // helper 模式：内核是 root 起的，本进程不持有 Process，交给 helper 停（否则 guard 直接 return → 内核残留）
         if ranViaHelper {
@@ -282,6 +288,82 @@ final class KernelRunner {
             // 连续多次崩溃：放弃自动重启，撤系统代理兜底防黑洞
             errorMessage = "\(why)。已连续 \(crashCount) 次异常退出，停止自动重启——请检查节点配置或查看日志。"
             disableSystemProxyIfNeeded()
+        }
+    }
+
+    // MARK: helper 模式：崩溃监测 + 日志 tail
+
+    /// 轮询 helper 内核存活；连续两次探测失败（约 6s）才判崩溃，避免偶发 IPC 抖动误杀。
+    private func startHelperWatch() {
+        helperWatchTask?.cancel()
+        helperWatchTask = Task { [weak self] in
+            var misses = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, !Task.isCancelled else { return }
+                guard self.ranViaHelper, self.runState == .running else { misses = 0; continue }
+                let alive = await SailHelperClient.kernelRunning()
+                // await 期间状态可能变化（用户停/切节点），复核后再判定
+                guard !Task.isCancelled, self.ranViaHelper, self.runState == .running else { misses = 0; continue }
+                if alive { misses = 0; continue }
+                misses += 1
+                if misses >= 2 { self.handleHelperCrash(); return }
+            }
+        }
+    }
+
+    /// helper 内核崩溃处理：复用直跑模式的限次退避自动重启逻辑。
+    private func handleHelperCrash() {
+        guard ranViaHelper, runState == .running else { return }
+        let uptime = startedAt.map { Date().timeIntervalSince($0) } ?? 0
+        ranViaHelper = false
+        startedAt = nil
+        runState = .stopped
+        TrafficMonitor.shared.stop()
+        helperLogTask?.cancel(); helperLogTask = nil
+        helperWatchTask = nil   // 当前 watch 正在退出
+
+        if uptime > 30 { crashCount = 0 }   // 健康跑过 30s 视作偶发，重置计数
+        let why = "TUN 内核异常退出"
+        if crashCount < Self.maxAutoRestarts {
+            crashCount += 1
+            let delay = Double(crashCount)
+            errorMessage = "\(why)，\(Int(delay)) 秒后自动重启（第 \(crashCount) 次）…"
+            autoRestartTask?.cancel()
+            autoRestartTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self, !Task.isCancelled, self.runState == .stopped else { return }
+                await self.start(auto: true)
+            }
+        } else {
+            errorMessage = "\(why)。已连续 \(crashCount) 次异常退出，停止自动重启——请检查节点配置或查看日志。"
+            disableSystemProxyIfNeeded()
+        }
+    }
+
+    /// tail helper 写的内核日志文件，增量并入 app 日志页（root 写、0644，用户可读）。
+    private func startHelperLogTail() {
+        helperLogTask?.cancel()
+        let path = HelperManager.kernelLog
+        helperLogTask = Task { [weak self] in
+            var offset: UInt64 = 0
+            var first = true
+            while !Task.isCancelled {
+                if !first { try? await Task.sleep(for: .seconds(1)) }
+                first = false
+                guard let self, !Task.isCancelled, self.ranViaHelper else { return }
+                guard let fh = FileHandle(forReadingAtPath: path) else { continue }
+                defer { try? fh.close() }
+                let size = (try? fh.seekToEnd()) ?? 0
+                if size < offset { offset = 0 }   // 新内核 O_TRUNC 截断 → 重读
+                guard size > offset else { continue }
+                try? fh.seek(toOffset: offset)
+                let data = (try? fh.readToEnd()) ?? Data()
+                offset = size
+                guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { continue }
+                let lines = text.split(whereSeparator: \.isNewline).map(String.init)
+                if !lines.isEmpty { self.appendLogs(lines) }
+            }
         }
     }
 

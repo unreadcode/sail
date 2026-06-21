@@ -142,7 +142,7 @@ private struct SingBoxCard: View {
                     }
                 }
                 Divider().padding(.leading, 16)
-                settingRow("虚拟网卡（TUN）服务", "安装特权组件后，内核经其以 root 运行虚拟网卡（替代 setuid，更安全）；安装/卸载需管理员授权") {
+                settingRow("虚拟网卡（TUN）服务", "安装特权组件后，内核经其以 root 运行虚拟网卡；安装/卸载需管理员授权") {
                     if tunBusy {
                         Spinner(size: 14)
                     } else if tunGranted {

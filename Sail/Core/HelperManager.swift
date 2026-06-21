@@ -9,6 +9,7 @@ enum HelperManager {
     static let plistDest = "/Library/LaunchDaemons/\(label).plist"
     static let supportDir = "/Library/Application Support/Sail"
     static let singboxDest = supportDir + "/sing-box"
+    static let kernelLog = supportDir + "/kernel.log"   // 须与 Helper/main.swift 的 kLogPath 一致
 
     /// app 内嵌的 helper 与内核源路径。
     nonisolated static var embeddedHelper: String { Bundle.main.bundlePath + "/Contents/Helpers/sail-helper" }

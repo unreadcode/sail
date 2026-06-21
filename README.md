@@ -23,7 +23,7 @@
 ## 系统要求
 
 - macOS 14.0+
-- Apple 芯片（arm64）。Intel 暂未支持。
+- Apple 芯片（arm64）。不支持 Intel。
 
 ## 安装
 
