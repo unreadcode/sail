@@ -42,9 +42,8 @@ struct SettingsView: View {
                         .renderingMode(.template)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 15, height: 15)
+                        .frame(width: 17, height: 17)
                 }
-                .buttonStyle(.plain)
                 .help("在 GitHub 查看源码")
             }
         }
