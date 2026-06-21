@@ -20,9 +20,9 @@ echo "▶ 准备 geo 规则集（在线拉取并内置）…"
 scripts/fetch-georules.sh
 
 echo "▶ 构建 Release…"
-# 不重定向到 /dev/null：CI 上构建失败时要能看到真实编译/签名错误
+# stdout 静音（编译日志太吵）；stderr 保留 + set -e：真出错仍会报错并中止
 xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" -configuration Release \
-  -destination 'generic/platform=macOS' -derivedDataPath "$DD" build
+  -destination 'generic/platform=macOS' -derivedDataPath "$DD" build >/dev/null
 [ -d "$APP" ] || { echo "✗ 未找到 $APP"; exit 1; }
 
 # 编译特权 helper 进 bundle（精简 Swift），并整体重签（含 helper / 内核），保持 ad-hoc 签名完整
