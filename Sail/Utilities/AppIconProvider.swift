@@ -10,9 +10,16 @@ enum AppIconProvider {
     static func icon(forExecutablePath path: String) -> NSImage {
         let resolved = bundlePath(for: path) ?? path
         if let hit = cache[resolved] { return hit }
-        let img = NSWorkspace.shared.icon(forFile: resolved)
-        cache[resolved] = img
-        return img
+        // 系统图标自带多档分辨率（最大可达 1024²）。我们只画 16pt，故栅格化成 32×32 单图缓存，
+        // 丢掉大档位引用 —— 每张几 KB，几十个应用合计也可忽略。
+        let raw = NSWorkspace.shared.icon(forFile: resolved)
+        let side = 32.0
+        let small = NSImage(size: NSSize(width: side, height: side))
+        small.lockFocus()
+        raw.draw(in: NSRect(x: 0, y: 0, width: side, height: side))
+        small.unlockFocus()
+        cache[resolved] = small
+        return small
     }
 
     /// 若路径位于某 .app 包内，返回最外层 .app 路径（Chrome 辅助进程 → Google Chrome.app）。
