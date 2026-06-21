@@ -11,6 +11,8 @@ let kSupportDir = "/Library/Application Support/Sail"
 let kSingBoxPath = kSupportDir + "/sing-box"      // root 所有的可信副本
 let kConfigPath  = kSupportDir + "/config.run.json"
 let kLogPath     = kSupportDir + "/kernel.log"    // 内核输出（0644，app 端 tail 读）
+let kLogMaxBytes: Int64 = 5 << 20                 // 日志超过 5MB 即裁剪
+let kLogKeepBytes: UInt64 = 1 << 20               // 裁剪后保留尾部 1MB
 
 // 允许的调用方 uid，由 plist 的 --uid 传入
 var allowedUID: uid_t = {
@@ -22,6 +24,20 @@ var allowedUID: uid_t = {
 var childPID: pid_t = 0   // 当前 sing-box 子进程
 
 func elog(_ s: String) { FileHandle.standardError.write(Data(("sail-helper: " + s + "\n").utf8)) }
+
+/// 日志封顶：超过上限只保留尾部，原地 truncate + 回写（不换 inode，内核 O_APPEND 继续写新末尾）。
+func trimLogIfNeeded() {
+    var st = stat()
+    guard stat(kLogPath, &st) == 0, st.st_size > kLogMaxBytes else { return }
+    guard let rh = FileHandle(forReadingAtPath: kLogPath) else { return }
+    try? rh.seek(toOffset: UInt64(st.st_size) - kLogKeepBytes)
+    let tail = (try? rh.readToEnd()) ?? Data()
+    try? rh.close()
+    guard let wh = FileHandle(forWritingAtPath: kLogPath) else { return }
+    try? wh.truncate(atOffset: 0)
+    try? wh.write(contentsOf: tail)
+    try? wh.close()
+}
 
 // MARK: 起 / 停 sing-box（root）
 
@@ -130,6 +146,9 @@ chown(kSocketPath, allowedUID, 0)
 chmod(kSocketPath, 0o600)
 guard listen(listenFD, 8) == 0 else { elog("listen() 失败"); exit(1) }
 elog("就绪，allowedUID=\(allowedUID)")
+
+// 后台定期裁剪日志，防长时间运行写爆磁盘（accept 阻塞主循环，故用独立线程）
+Thread.detachNewThread { while true { sleep(30); trimLogIfNeeded() } }
 
 while true {
     let conn = accept(listenFD, nil, nil)
