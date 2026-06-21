@@ -19,6 +19,15 @@ final class TrafficMonitor {
     private(set) var connectionList: [Conn] = []   // 实时连接明细（连接管理页消费）
     private(set) var history: [Double] = Array(repeating: 0, count: historyLen)
 
+    // 会话级累计用量（按维度），由活跃连接逐帧增量累加，连接关闭也不丢；resetStats() 清零。
+    struct Usage: Equatable { var up = 0.0; var down = 0.0; var total: Double { up + down } }
+    private(set) var byDomain: [String: Usage] = [:]
+    private(set) var byProcess: [String: Usage] = [:]
+    private(set) var byNetwork: [String: Usage] = [:]
+    private(set) var byChain: [String: Usage] = [:]
+    /// 每连接上次累计字节，用于算每帧 delta；连接关闭后清除（其 delta 已计入）。
+    private var lastConnBytes: [String: (up: Double, down: Double)] = [:]
+
     private var tasks: [Task<Void, Never>] = []
 
     private init() {}
@@ -54,6 +63,7 @@ final class TrafficMonitor {
                 let raw = (o["connections"] as? [[String: Any]]) ?? []
                 self.connections = raw.count
                 self.connectionList = Self.parse(raw)
+                self.accumulate(self.connectionList)
                 // 内存每秒一帧、且因 Go GC 持续 ±0.1MB 抖动 → 前端一位小数会一直闪。
                 // 仅当变化超过阈值（0.5MB）才更新，滤掉 GC 噪声，稳住显示。
                 if let mem = o["memory"] as? Double, abs(mem - self.memory) >= 512 * 1024 {
@@ -69,6 +79,54 @@ final class TrafficMonitor {
         up = 0; down = 0; totalUp = 0; totalDown = 0; memory = 0; connections = 0
         connectionList = []
         history = Array(repeating: 0, count: Self.historyLen)
+    }
+
+    // MARK: 维度用量累加（会话级）
+
+    /// 逐帧把每条活跃连接「比上一帧多出的字节」加进各维度桶；连接关闭前的最后一笔已计入，故关了也不丢。
+    private func accumulate(_ conns: [Conn]) {
+        var active = Set<String>()
+        for c in conns {
+            active.insert(c.id)
+            let prev = lastConnBytes[c.id] ?? (0, 0)
+            var du = c.upload - prev.up
+            var dd = c.download - prev.down
+            if du < 0 || dd < 0 { du = c.upload; dd = c.download }  // 字节回退（异常）→ 按当前值兜底
+            guard du > 0 || dd > 0 else { continue }
+            lastConnBytes[c.id] = (c.upload, c.download)
+            Self.add(&byDomain, Self.hostOnly(c.host), du, dd)
+            Self.add(&byProcess, c.process.isEmpty ? "未知进程" : c.process, du, dd)
+            Self.add(&byNetwork, c.network.isEmpty ? "—" : c.network.uppercased(), du, dd)
+            Self.add(&byChain, c.chain.isEmpty ? "—" : c.chain, du, dd)
+        }
+        // 已关闭连接的 last-bytes 清掉（delta 已累计，无需保留）
+        if lastConnBytes.count > active.count {
+            lastConnBytes = lastConnBytes.filter { active.contains($0.key) }
+        }
+    }
+
+    /// 清零所有维度统计。
+    func resetStats() {
+        byDomain = [:]; byProcess = [:]; byNetwork = [:]; byChain = [:]
+        lastConnBytes = [:]
+    }
+
+    private static func add(_ dict: inout [String: Usage], _ key: String, _ up: Double, _ down: Double) {
+        var u = dict[key] ?? Usage()
+        u.up += up; u.down += down
+        dict[key] = u
+    }
+
+    /// 去掉 host 结尾的 :port（含 IPv6 字面量 [..]:port），按域名聚合。
+    nonisolated private static func hostOnly(_ s: String) -> String {
+        if s.hasPrefix("["), let close = s.firstIndex(of: "]") {
+            return String(s[s.index(after: s.startIndex)..<close])
+        }
+        if let colon = s.lastIndex(of: ":"), !s[s.index(after: colon)...].isEmpty,
+           s[s.index(after: colon)...].allSatisfy(\.isNumber) {
+            return String(s[..<colon])
+        }
+        return s.isEmpty ? "—" : s
     }
 
     // MARK: 关闭连接

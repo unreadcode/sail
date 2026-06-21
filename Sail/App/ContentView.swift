@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 侧栏导航项，对齐参考项目（Wails 版）的信息架构
 enum NavItem: String, CaseIterable, Identifiable {
-    case overview, subscriptions, nodes, rules, connections, logs, settings
+    case overview, subscriptions, nodes, rules, connections, traffic, logs, settings
 
     var id: String { rawValue }
 
@@ -13,6 +13,7 @@ enum NavItem: String, CaseIterable, Identifiable {
         case .nodes: "节点"
         case .rules: "规则"
         case .connections: "连接"
+        case .traffic: "流量"
         case .logs: "日志"
         case .settings: "设置"
         }
@@ -25,6 +26,7 @@ enum NavItem: String, CaseIterable, Identifiable {
         case .nodes: "当前订阅的节点"
         case .rules: "自定义分流规则"
         case .connections: "实时连接与流量"
+        case .traffic: "按域名 / 应用 / 协议统计用量"
         case .logs: "内核运行日志"
         case .settings: "应用常规偏好与内核管理"
         }
@@ -37,6 +39,7 @@ enum NavItem: String, CaseIterable, Identifiable {
         case .nodes: "circle.hexagongrid"
         case .rules: "arrow.triangle.branch"
         case .connections: "network"
+        case .traffic: "chart.bar.xaxis"
         case .logs: "terminal"
         case .settings: "gearshape"
         }
@@ -46,7 +49,7 @@ enum NavItem: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @State private var selection: NavItem = .overview
 
-    private let mainNav: [NavItem] = [.overview, .subscriptions, .nodes, .rules, .connections, .logs, .settings]
+    private let mainNav: [NavItem] = [.overview, .subscriptions, .nodes, .rules, .connections, .traffic, .logs, .settings]
 
     var body: some View {
         NavigationSplitView {
@@ -92,6 +95,7 @@ private struct DetailContainer: View {
             case .nodes: NodesView()
             case .rules: RulesView()
             case .connections: ConnectionsView()
+            case .traffic: TrafficView()
             case .logs: LogsView()
             case .settings: SettingsView()
             }
