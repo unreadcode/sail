@@ -56,6 +56,7 @@
 				3DBA4DD32FE17FED00FDF544 /* Frameworks */,
 				3DBA4DD42FE17FED00FDF544 /* Resources */,
 				A1F00000000000000F000001 /* Verify sing-box kernel present */,
+				A1F00000000000000F000002 /* Embed privileged helper */,
 			);
 			buildRules = (
 			);
@@ -132,6 +133,22 @@
 			shellPath = /bin/sh;
 			shellScript = "if [ ! -f \"${SRCROOT}/Sail/Resources/sing-box\" ]; then\n  echo \"error: 缺少内核二进制 Sail/Resources/sing-box —— 请先运行 scripts/fetch-kernel.sh（make-dmg.sh 与 CI 会自动处理）\"\n  exit 1\nfi\n";
 		};
+		A1F00000000000000F000002 /* Embed privileged helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Helper/main.swift",
+			);
+			name = "Embed privileged helper";
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(WRAPPER_NAME)/Contents/Helpers/sail-helper",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}/Contents/Helpers\"\nmkdir -p \"$DEST\"\nxcrun swiftc -O \"${SRCROOT}/Helper/main.swift\" -o \"$DEST/sail-helper\"\ncodesign --force --sign - \"$DEST/sail-helper\"\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -183,7 +200,7 @@
 				DEVELOPMENT_TEAM = L823ADT432;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -247,7 +264,7 @@
 				DEVELOPMENT_TEAM = L823ADT432;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
