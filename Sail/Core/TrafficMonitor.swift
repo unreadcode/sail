@@ -114,7 +114,7 @@ final class TrafficMonitor {
             lastConnBytes[id] = (up, down)
             let m = c["metadata"] as? [String: Any] ?? [:]
             let host = (m["host"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (m["destinationIP"] as? String) ?? "—"
-            let proc = (m["processPath"] as? String).map { ($0 as NSString).lastPathComponent } ?? (m["process"] as? String) ?? ""
+            let proc = Self.procName(m)
             let network = (m["network"] as? String) ?? ""
             let chain = ((c["chains"] as? [String]) ?? []).reversed().joined(separator: " → ")
             Self.add(&byDomain, Self.hostOnly(host), du, dd)
@@ -159,6 +159,17 @@ final class TrafficMonitor {
         dict[key] = u
     }
 
+    /// sing-box 在 macOS 可能给 processPath 附加 " (用户名)" 后缀 → 每行都带，去掉。
+    private nonisolated static let userSuffix = " (\(NSUserName()))"
+
+    /// 从连接 metadata 提取进程名：优先 processPath 末段，退回 process；去掉用户名后缀。
+    nonisolated static func procName(_ m: [String: Any]) -> String {
+        var name = (m["processPath"] as? String).map { ($0 as NSString).lastPathComponent }
+            ?? (m["process"] as? String) ?? ""
+        if name.hasSuffix(userSuffix) { name.removeLast(userSuffix.count) }
+        return name
+    }
+
     /// 去掉 host 结尾的 :port（含 IPv6 字面量 [..]:port），按域名聚合。
     nonisolated private static func hostOnly(_ s: String) -> String {
         if s.hasPrefix("["), let close = s.firstIndex(of: "]") {
@@ -198,8 +209,7 @@ final class TrafficMonitor {
             let host = (m["host"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 ?? (m["destinationIP"] as? String) ?? "—"
             let port = (m["destinationPort"] as? String) ?? ""
-            let proc = (m["processPath"] as? String).map { ($0 as NSString).lastPathComponent }
-                ?? (m["process"] as? String) ?? ""
+            let proc = Self.procName(m)
             let chains = (c["chains"] as? [String]) ?? []
             return Conn(
                 id: (c["id"] as? String) ?? UUID().uuidString,

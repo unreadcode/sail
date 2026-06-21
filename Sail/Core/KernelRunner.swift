@@ -538,6 +538,14 @@ final class KernelRunner {
             }
             route["rule_set"] = sets
         }
+
+        // 进程解析开关：sing-box 仅当路由里存在「进程匹配」条件时，才会逐连接解析进程名。
+        // 加一条永不命中的哨兵规则（无进程叫这名），只为打开解析，让流量页「应用」维度有数据；
+        // 放最后且 action 为 route→direct，永不命中故不影响实际分流。
+        var withProbe = (route["rules"] as? [[String: Any]]) ?? []
+        withProbe.append(["process_name": ["sail-enable-process-resolve"], "action": "route", "outbound": "direct"])
+        route["rules"] = withProbe
+
         config["route"] = route
 
         return config
