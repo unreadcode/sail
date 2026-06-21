@@ -31,6 +31,18 @@ struct SettingsView: View {
             .padding(24)
         }
         .scrollIndicators(.hidden)
+        .toolbar {
+            ToolbarItem {
+                Link(destination: URL(string: "https://github.com/unreadcode/sail")!) {
+                    Image("GitHubMark")
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 16, height: 16)
+                }
+                .help("在 GitHub 查看源码")
+            }
+        }
     }
 }
 
