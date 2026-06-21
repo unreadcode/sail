@@ -78,13 +78,19 @@ final class KernelRunner {
         await Task.detached { Self.killStrayKernels() }.value
 
         // TUN 需 root：经特权 helper 以 root 起内核（替代 setuid）。helper 未装则先弹一次管理员授权安装。
-        if SettingsStore.shared.tunEnabled, !HelperManager.isInstalled {
-            let ok = await HelperManager.install()
-            if !ok {
-                runState = .stopped
-                errorMessage = "未能安装 TUN 特权组件（需管理员授权）"
-                disableSystemProxyIfNeeded()
-                return
+        if SettingsStore.shared.tunEnabled {
+            if !HelperManager.isInstalled {
+                let ok = await HelperManager.install()
+                if !ok {
+                    runState = .stopped
+                    errorMessage = "未能安装 TUN 特权组件（需管理员授权）"
+                    disableSystemProxyIfNeeded()
+                    return
+                }
+            } else if !auto, await HelperManager.isStale() {
+                // 已装但是旧版（如缺内核日志重定向）→ 重装刷新（管理员授权）；
+                // 仅用户主动启动时弹授权，崩溃自动重启不打扰；失败不致命，继续用旧 helper
+                _ = await HelperManager.install()
             }
         }
 

@@ -245,5 +245,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private func hideToTray() {
         NSApp.windows.forEach { $0.orderOut(nil) }
         NSApp.setActivationPolicy(.accessory)   // 同时隐藏 Dock 图标
+        // 收托盘后把 malloc 在浏览高峰时申请、释放后仍留存的空闲页还给系统，
+        // 避免 RSS 长期卡在高水位。延后一拍，等 orderOut + SwiftUI 释放离屏绘制资源后再回收。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            malloc_zone_pressure_relief(nil, 0)
+        }
     }
 }

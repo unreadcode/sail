@@ -5,6 +5,8 @@ import Foundation
 /// 所有特权命令直接 inline 进 osascript 一次性执行，不落任何临时脚本 → 无 TOCTOU 窗口。
 enum HelperManager {
     static let label = "com.unreadcode.Sail.helper"
+    /// 内嵌 helper 的版本，须与 Helper/main.swift 的 kHelperVersion 一致；装着的版本不符即判旧、自动重装。
+    static let expectedVersion = "2"
     static let helperDest = "/Library/PrivilegedHelperTools/\(label)"
     static let plistDest = "/Library/LaunchDaemons/\(label).plist"
     static let supportDir = "/Library/Application Support/Sail"
@@ -17,6 +19,12 @@ enum HelperManager {
 
     /// 是否已安装（plist 在位即认为装过；可读，无需 root）。
     nonisolated static var isInstalled: Bool { FileManager.default.fileExists(atPath: plistDest) }
+
+    /// 已安装的 helper 是否过旧（版本不符或旧到不认识 version 命令）。仅在已安装时判断。
+    static func isStale() async -> Bool {
+        guard isInstalled else { return false }
+        return await SailHelperClient.helperVersion() != expectedVersion
+    }
 
     /// 安装：弹一次管理员授权（所有命令 inline 进 osascript，不落任何临时脚本 → 无 TOCTOU），装好后验证 helper 能 ping 通。
     static func install() async -> Bool {

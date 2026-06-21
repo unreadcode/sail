@@ -6,6 +6,7 @@
 //  - 只运行 root-only 路径下、且属主为 root 的 sing-box；配置由 helper 写到 root-only 路径（不读用户可写的）。
 import Foundation
 
+let kHelperVersion = "2"   // helper 自身版本：改 helper 行为时 +1，app 据此判旧并自动重装
 let kSocketPath = "/var/run/com.unreadcode.Sail.helper.sock"
 let kSupportDir = "/Library/Application Support/Sail"
 let kSingBoxPath = kSupportDir + "/sing-box"      // root 所有的可信副本
@@ -100,6 +101,8 @@ func handle(_ line: String) -> String {
     switch cmd {
     case "ping":
         return "{\"ok\":true}\n"
+    case "version":
+        return "{\"ok\":true,\"version\":\"\(kHelperVersion)\"}\n"
     case "status":
         reapIfExited()
         return "{\"ok\":true,\"running\":\(childPID > 0)}\n"

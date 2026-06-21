@@ -12,6 +12,13 @@ enum SailHelperClient {
         (await request(["cmd": "ping"]))?["ok"] as? Bool == true
     }
 
+    /// 已安装 helper 的自身版本；旧版（不认识 version 命令）返回 nil。
+    static func helperVersion() async -> String? {
+        let r = await request(["cmd": "version"])
+        guard r?["ok"] as? Bool == true else { return nil }
+        return r?["version"] as? String
+    }
+
     static func kernelRunning() async -> Bool {
         let r = await request(["cmd": "status"])
         return (r?["ok"] as? Bool == true) && (r?["running"] as? Bool == true)
