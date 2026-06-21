@@ -31,24 +31,20 @@ private struct CustomRulesPane: View {
                 emptyState
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("自定义规则优先于内置分流，自上而下匹配；拖动可调整优先级。改动即时生效（重启内核）。")
+                    Text("自定义规则优先于内置分流，自上而下匹配。改动即时生效（重启内核）。")
                         .font(.caption).foregroundStyle(.secondary)
                         .padding(.horizontal, 26).padding(.top, 18).padding(.bottom, 12)
-                    List {
-                        ForEach(store.rules) { rule in
-                            RuleRow(rule: rule, onEdit: { editing = rule })
-                                .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 0))
-                                .listRowSeparator(.hidden)
-                                .listRowBackground(Color.clear)
+                    ScrollView {
+                        LazyVStack(spacing: 6) {
+                            ForEach(store.rules) { rule in
+                                RuleRow(rule: rule, onEdit: { editing = rule })
+                            }
                         }
-                        .onMove { store.move(from: $0, to: $1) }
+                        .frame(maxWidth: 720)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 24).padding(.bottom, 16)
                     }
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
-                    .environment(\.defaultMinListRowHeight, 0)
-                    .frame(maxWidth: 720)
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 24).padding(.bottom, 16)
+                    .scrollIndicators(.hidden)
                 }
             }
         }
@@ -272,10 +268,6 @@ private struct RuleRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 11))
-                .foregroundStyle(hovering ? .secondary : .tertiary)
-                .help("拖动调整优先级")
             Toggle("", isOn: Binding(get: { rule.enabled }, set: { store.setEnabled(rule.id, $0) }))
                 .labelsHidden().toggleStyle(.switch).controlSize(.mini)
             VStack(alignment: .leading, spacing: 2) {
@@ -305,8 +297,7 @@ private struct RuleRow: View {
         .contentShape(Rectangle())
         .opacity(rule.enabled ? 1 : 0.45)
         .onHover { hovering = $0 }
-        // 双击编辑：单击会拦截 List 的拖拽手势导致排序失效，故用双击；日常编辑用悬停出现的铅笔按钮
-        .onTapGesture(count: 2) { onEdit() }
+        .onTapGesture(count: 2) { onEdit() }   // 双击编辑；日常也可用悬停出现的铅笔按钮
     }
 
     private var actionBadge: some View {
