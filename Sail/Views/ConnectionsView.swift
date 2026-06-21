@@ -29,7 +29,7 @@ struct ConnectionsView: View {
         Group {
             if !runner.isRunning {
                 placeholder("内核未运行", "启动内核后这里显示实时连接", system: "bolt.horizontal.circle")
-            } else if monitor.connectionList.isEmpty {
+            } else if monitor.connections == 0 {
                 placeholder("暂无活动连接", "有网络请求经过 Sail 时会出现在这里", system: "point.3.connected.trianglepath.dotted")
             } else {
                 VStack(spacing: 0) {
@@ -40,6 +40,9 @@ struct ConnectionsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // 仅本页可见时才让 monitor 构建完整连接列表（含日期解析），离开即释放，省常驻内存/开销
+        .onAppear { monitor.beginObservingConnections() }
+        .onDisappear { monitor.endObservingConnections() }
     }
 
     private var header: some View {
