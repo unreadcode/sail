@@ -28,6 +28,12 @@ enum SailHelperClient {
         (await request(["cmd": "stop"]))?["ok"] as? Bool == true
     }
 
+    /// 同步停内核：仅供 app 退出收尾（applicationWillTerminate 不能 await，可短暂阻塞）。
+    /// 在调用线程做一次带 6s 超时的 socket 往返，确保 root TUN 内核被停掉。
+    static func stopKernelSync() {
+        _ = sendSync(["cmd": "stop"])
+    }
+
     // MARK: 底层
 
     /// 后台队列发请求、读一行响应；任何路径都 close(fd)。

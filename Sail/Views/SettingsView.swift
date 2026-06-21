@@ -142,7 +142,7 @@ private struct SingBoxCard: View {
                     }
                 }
                 Divider().padding(.leading, 16)
-                settingRow("虚拟网卡（TUN）服务", "安装后内核可免密以 root 运行虚拟网卡（setuid）；安装/卸载需管理员授权") {
+                settingRow("虚拟网卡（TUN）服务", "安装特权组件后，内核经其以 root 运行虚拟网卡（替代 setuid，更安全）；安装/卸载需管理员授权") {
                     if tunBusy {
                         Spinner(size: 14)
                     } else if tunGranted {
@@ -166,7 +166,7 @@ private struct SingBoxCard: View {
         }
         .onAppear {
             portText = String(store.mixedPort)
-            tunGranted = TUNPermission.isGranted()
+            tunGranted = HelperManager.isInstalled
         }
         .sheet(isPresented: $showingTUN) {
             TUNSettingsSheet(config: store.tun) { store.setTUN($0) }
@@ -181,8 +181,8 @@ private struct SingBoxCard: View {
     private func installTUNService() {
         tunBusy = true
         Task {
-            _ = await Task.detached { TUNPermission.grant() }.value
-            tunGranted = TUNPermission.isGranted()
+            _ = await HelperManager.install()
+            tunGranted = HelperManager.isInstalled
             tunBusy = false
         }
     }
@@ -191,8 +191,8 @@ private struct SingBoxCard: View {
         tunBusy = true
         Task {
             if store.tunEnabled { await store.setTunEnabled(false) }  // 先关闭虚拟网卡
-            _ = await Task.detached { TUNPermission.revoke() }.value
-            tunGranted = TUNPermission.isGranted()
+            _ = await HelperManager.uninstall()
+            tunGranted = HelperManager.isInstalled
             tunBusy = false
         }
     }

@@ -27,6 +27,7 @@ final class KernelRunner {
     var isBusy: Bool { runState == .starting || runState == .stopping }
 
     private var process: Process?
+    private var ranViaHelper = false   // 本次内核是否由特权 helper(root) 启动（TUN 模式）
     private let maxLogLines = 800
 
     // 内核异常退出后的自动重启：限次 + 退避，避免坏配置导致的无限快速重启循环
@@ -74,44 +75,55 @@ final class KernelRunner {
         // 旧 sing-box 仍占着 clash_api/本地端口，新内核会因端口冲突 code 1 退出。
         await Task.detached { Self.killStrayKernels() }.value
 
-        // TUN 开启需 root：首次授权将内核设为 setuid root（弹一次管理员）
-        if SettingsStore.shared.tunEnabled, !TUNPermission.isGranted() {
-            let ok = await Task.detached { TUNPermission.grant() }.value
+        // TUN 需 root：经特权 helper 以 root 起内核（替代 setuid）。helper 未装则先弹一次管理员授权安装。
+        if SettingsStore.shared.tunEnabled, !HelperManager.isInstalled {
+            let ok = await HelperManager.install()
             if !ok {
                 runState = .stopped
-                errorMessage = "未获得 TUN 权限（需管理员授权）"
+                errorMessage = "未能安装 TUN 特权组件（需管理员授权）"
                 disableSystemProxyIfNeeded()
                 return
             }
         }
 
+        let useHelper = SettingsStore.shared.tunEnabled && HelperManager.isInstalled
         do {
-            try writeConfig()
-
-            let proc = Process()
-            proc.executableURL = KernelPaths.binary
-            proc.arguments = ["run", "-c", KernelPaths.runtimeConfig.path]
-
-            let pipe = Pipe()
-            proc.standardOutput = pipe
-            proc.standardError = pipe
-            pipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-                let lines = text.split(whereSeparator: \.isNewline).map(String.init)
-                guard !lines.isEmpty else { return }
-                Task { @MainActor in KernelRunner.shared.appendLogs(lines) }
+            if useHelper {
+                // helper 模式：配置交给 root helper 起 sing-box（TUN 需要 root，本进程不持有内核进程）
+                let data = try JSONSerialization.data(withJSONObject: makeConfig())
+                let (ok, err) = await SailHelperClient.startKernel(config: String(decoding: data, as: UTF8.self))
+                guard ok else { throw KernelError.message(err ?? "helper 启动失败") }
+                ranViaHelper = true
+                process = nil
+                startedAt = Date()
+                runState = .running
+                appendLogs(["[TUN] 内核已由特权 helper 以 root 启动"])
+            } else {
+                ranViaHelper = false
+                try writeConfig()
+                let proc = Process()
+                proc.executableURL = KernelPaths.binary
+                proc.arguments = ["run", "-c", KernelPaths.runtimeConfig.path]
+                let pipe = Pipe()
+                proc.standardOutput = pipe
+                proc.standardError = pipe
+                pipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+                    let lines = text.split(whereSeparator: \.isNewline).map(String.init)
+                    guard !lines.isEmpty else { return }
+                    Task { @MainActor in KernelRunner.shared.appendLogs(lines) }
+                }
+                proc.terminationHandler = { finished in
+                    let code = finished.terminationStatus
+                    let bySignal = finished.terminationReason == .uncaughtSignal
+                    Task { @MainActor in KernelRunner.shared.handleTermination(code: code, bySignal: bySignal) }
+                }
+                try proc.run()
+                process = proc
+                startedAt = Date()
+                runState = .running
             }
-            proc.terminationHandler = { finished in
-                let code = finished.terminationStatus
-                let bySignal = finished.terminationReason == .uncaughtSignal
-                Task { @MainActor in KernelRunner.shared.handleTermination(code: code, bySignal: bySignal) }
-            }
-
-            try proc.run()
-            process = proc
-            startedAt = Date()
-            runState = .running
 
             // 系统代理开关开启则接管系统代理（与 TUN 独立，可共存）
             if SettingsStore.shared.systemProxyEnabled {
@@ -122,6 +134,7 @@ final class KernelRunner {
         } catch {
             process = nil
             startedAt = nil
+            ranViaHelper = false
             runState = .stopped
             errorMessage = "启动失败：\(error.localizedDescription)"
             disableSystemProxyIfNeeded()
@@ -149,7 +162,7 @@ final class KernelRunner {
         }
     }
 
-    /// 杀掉残留的主内核进程（清理孤儿）。setuid-root 内核 real UID 仍是当前用户，可被 pkill。
+    /// 杀掉残留的用户态主内核进程（清理孤儿）。helper 模式的 root 内核不在此列（由 helper 自己停）。
     /// 按运行配置路径匹配而非二进制路径：测速临时实例跑的是 sail-latency-*.json，不能误杀。
     nonisolated private static func killStrayKernels() {
         let p = Process()
@@ -166,6 +179,18 @@ final class KernelRunner {
     func stop() async {
         autoRestartTask?.cancel(); autoRestartTask = nil   // 用户主动停止，取消待重启
         crashCount = 0
+        // helper 模式：内核是 root 起的，本进程不持有 Process，交给 helper 停（否则 guard 直接 return → 内核残留）
+        if ranViaHelper {
+            guard runState == .running || runState == .starting else { return }
+            runState = .stopping
+            _ = await SailHelperClient.stopKernel()
+            ranViaHelper = false
+            startedAt = nil
+            runState = .stopped
+            TrafficMonitor.shared.stop()
+            disableSystemProxyIfNeeded()
+            return
+        }
         guard let proc = process, runState == .running || runState == .starting else { return }
         runState = .stopping
         proc.terminate() // SIGTERM，sing-box 会优雅退出
@@ -191,7 +216,7 @@ final class KernelRunner {
     }
 
     /// 应用退出时同步收尾，避免遗留孤儿进程（不能 await）。
-    /// 必须等内核真正退出：setuid-root 的 TUN 实例若成孤儿会继续占用路由表 → 整机断网。
+    /// 必须等内核真正退出：root 的 TUN 实例若成孤儿会继续占用路由表 → 整机断网。
     /// applicationWillTerminate 允许同步阻塞（系统给约 5s），故这里轮询等待 + 超时强杀。
     nonisolated func terminateForAppExit() {
         // terminationHandler 触发的状态更新此刻已无意义，尽力发送终止信号即可
@@ -199,6 +224,11 @@ final class KernelRunner {
             // 先释放系统代理，避免退出后用户断网
             if SettingsStore.shared.systemProxyEnabled {
                 SystemProxy.disable()
+            }
+            // helper 模式：同步停掉 root 起的内核，否则退出后残留 root TUN 占路由表 → 整机断网
+            if ranViaHelper {
+                SailHelperClient.stopKernelSync()
+                return
             }
             guard let proc = process, proc.isRunning else { return }
             proc.terminate() // SIGTERM，sing-box 优雅退出

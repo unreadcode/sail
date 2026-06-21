@@ -2,7 +2,7 @@ import Foundation
 
 /// 特权 helper 的安装 / 卸载（替代 setuid）。
 /// 一次管理员授权（osascript）把 helper + 内核副本装到 root-only 路径、写 LaunchDaemon plist 并 bootstrap。
-/// 所有特权操作打包成一个用户态脚本、放进 0700 临时目录，由 osascript 以 root 执行（减小 TOCTOU）。
+/// 所有特权命令直接 inline 进 osascript 一次性执行，不落任何临时脚本 → 无 TOCTOU 窗口。
 enum HelperManager {
     static let label = "com.unreadcode.Sail.helper"
     static let helperDest = "/Library/PrivilegedHelperTools/\(label)"
