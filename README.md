@@ -2,9 +2,9 @@
 
 # Sail ⛵️
 
-**原生 macOS 的 [sing-box](https://github.com/SagerNet/sing-box) 代理客户端**
+**A native macOS proxy client for [sing-box](https://github.com/SagerNet/sing-box)**
 
-系统代理/TUN · 订阅管理 · 规则分流 · 实时流量/连接 · 延迟测速
+System proxy / TUN · Subscriptions · Rule-based routing · Live traffic & connections · Latency tests
 
 <p>
   <a href="https://github.com/unreadcode/sail/stargazers"><img src="https://img.shields.io/github/stars/unreadcode/sail?style=flat&logo=github" alt="Stars"></a>
@@ -16,60 +16,64 @@
   <img src="https://img.shields.io/badge/macOS-14%2B%20·%20Apple%20Silicon-000?style=flat&logo=apple" alt="Platform">
 </p>
 
+**English** | [简体中文](README.zh-CN.md)
+
 </div>
 
 ---
 
-## 系统要求
+## Requirements
 
 - macOS 14.0+
-- Apple 芯片（arm64）。不支持 Intel。
+- Apple Silicon (arm64). Intel is not supported.
 
-## 安装
+## Installation
 
-1. 到 [Releases](https://github.com/unreadcode/sail/releases) 下载最新的 `Sail.dmg`，打开后把 **Sail** 拖进「应用程序」。
-2. 首次打开时，在终端执行一行命令以允许运行：
+1. Download the latest `Sail.dmg` from [Releases](https://github.com/unreadcode/sail/releases), open it, and drag **Sail** into your Applications folder.
+2. On first launch, run this once in Terminal to allow it to run:
 
    ```bash
    xattr -dr com.apple.quarantine /Applications/Sail.app
    ```
 
-   之后双击正常打开（每次更新后同样执行一次即可）。
+   Then open it normally by double-clicking (run the command once again after each manual update).
 
-> 本应用采用 ad-hoc 签名而非 Apple 公证，故 macOS Gatekeeper 默认会拦截下载的副本，上述命令用于解除该限制。也可在被拦后前往「系统设置 → 隐私与安全性」点「仍要打开」。源码完全公开，欢迎审阅与自行构建。
+> Sail is ad-hoc signed rather than Apple-notarized, so macOS Gatekeeper blocks downloaded copies by default — the command above lifts that restriction. Alternatively, after being blocked, go to **System Settings → Privacy & Security** and click **Open Anyway**. The source is fully open for review and self-building.
 
-## 从源码构建
+## Build from source
 
 ```bash
 git clone https://github.com/unreadcode/sail.git
 cd sail
 
-# 1) 拉取并内置 sing-box 内核（二进制不入库，按锁定版本在线获取）
+# 1) Fetch and embed the sing-box kernel + geo rule-sets
+#    (binaries/data are not committed; pulled online on demand)
 scripts/fetch-kernel.sh
+scripts/fetch-georules.sh
 
-# 2) 构建
+# 2) Build
 xcodebuild -project Sail.xcodeproj -scheme Sail -configuration Debug \
   -derivedDataPath build/Debug-dd build
 
-# 或一键出 DMG（自动 fetch-kernel → Release → 打包）
+# Or build a DMG in one shot (auto fetch-kernel + fetch-georules → Release → package)
 scripts/make-dmg.sh
 ```
 
-> 若在 Xcode 里直接 Build 而没先跑 `fetch-kernel.sh`，构建会**报错提示**（守卫脚本阶段），不会静默打出无内核的包。
+> If you build directly in Xcode without running `fetch-kernel.sh` first, the build **fails with an error** (a guard script phase) rather than silently producing a kernel-less package.
 
-## 自动更新
+## Auto update
 
-app 启动时静默检查 GitHub 最新 release，有新版会在**托盘菜单**和**设置 → 关于**提示。点「更新」即**一键下载并安装**——自动下载、替换、重启，全程无需手动操作。
+Sail silently checks for the latest GitHub release on launch. When a new version is available, it's flagged in the **tray menu** and under **Settings → About**. Click **Update** for a **one-click download and install** — it downloads, replaces, and relaunches automatically, with no manual steps.
 
-> 应用内更新由程序自取，不带隔离属性，所以**不需要再跑 `xattr` 命令**（那行只在你首次从浏览器下载时需要）。
+> In-app updates are fetched by the app itself without the quarantine attribute, so **no `xattr` command is needed** (that line is only for your first download from a browser).
 
-## 致谢
+## Credits
 
-- 内核：[SagerNet/sing-box](https://github.com/SagerNet/sing-box)
-- GEO 规则集：[sing-geosite](https://github.com/SagerNet/sing-geosite) / [sing-geoip](https://github.com/SagerNet/sing-geoip)
+- Kernel: [SagerNet/sing-box](https://github.com/SagerNet/sing-box)
+- GEO rule-sets: [sing-geosite](https://github.com/SagerNet/sing-geosite) / [sing-geoip](https://github.com/SagerNet/sing-geoip)
 
-## 许可
+## License
 
 [GPL-3.0](LICENSE) © 2026 Unreadcode
 
-本项目及其衍生作品在分发时均须以 GPL-3.0 开放源码。内置的 sing-box 以独立进程调用，沿用其自身的 GPL-3.0 许可。
+This project and any derivative works must be distributed under GPL-3.0 with source available. The bundled sing-box is invoked as a separate process and retains its own GPL-3.0 license.
