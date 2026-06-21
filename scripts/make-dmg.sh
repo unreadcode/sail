@@ -22,6 +22,13 @@ xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" -configuration Rel
   -destination 'generic/platform=macOS' -derivedDataPath "$DD" build
 [ -d "$APP" ] || { echo "✗ 未找到 $APP"; exit 1; }
 
+# 编译特权 helper 进 bundle（精简 Swift），并整体重签（含 helper / 内核），保持 ad-hoc 签名完整
+echo "▶ 编译并内嵌特权 helper…"
+mkdir -p "$APP/Contents/Helpers"
+xcrun swiftc -O Helper/main.swift -o "$APP/Contents/Helpers/sail-helper"
+codesign --force --sign - "$APP/Contents/Helpers/sail-helper"
+codesign --force --deep --sign - "$APP"
+
 # 准备 dmgbuild（独立 venv，避免污染系统 Python）
 if [ ! -x "$VENV/bin/dmgbuild" ]; then
   echo "▶ 准备 dmgbuild…"
