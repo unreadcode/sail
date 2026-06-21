@@ -76,9 +76,23 @@ struct TrafficView: View {
         .scrollIndicators(.hidden)
     }
 
+    /// 「应用」维度的前置图标：有路径取 app/可执行图标，无（未知）则占位符。
+    @ViewBuilder
+    private func processIcon(_ name: String) -> some View {
+        if let path = monitor.processPaths[name], !path.isEmpty {
+            Image(nsImage: AppIconProvider.icon(forExecutablePath: path))
+                .resizable().frame(width: 16, height: 16)
+        } else {
+            Image(systemName: "app.dashed")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .frame(width: 16, height: 16)
+        }
+    }
+
     private func row(_ name: String, _ u: TrafficMonitor.Usage) -> some View {
         VStack(spacing: 6) {
             HStack(spacing: 8) {
+                if dimension == .process { processIcon(name) }
                 Text(name)
                     .font(.system(size: 12.5))
                     .lineLimit(1).truncationMode(.middle)

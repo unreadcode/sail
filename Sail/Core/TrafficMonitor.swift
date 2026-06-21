@@ -25,6 +25,8 @@ final class TrafficMonitor {
     private(set) var byProcess: [String: Usage] = [:]
     private(set) var byNetwork: [String: Usage] = [:]
     private(set) var byChain: [String: Usage] = [:]
+    /// 进程名 → 代表性可执行路径（供流量页「应用」维度取图标）。
+    private(set) var processPaths: [String: String] = [:]
     /// 每连接上次累计字节，用于算每帧 delta；连接关闭后清除（其 delta 已计入）。
     private var lastConnBytes: [String: (up: Double, down: Double)] = [:]
 
@@ -117,8 +119,11 @@ final class TrafficMonitor {
             let proc = Self.procName(m)
             let network = (m["network"] as? String) ?? ""
             let chain = ((c["chains"] as? [String]) ?? []).reversed().joined(separator: " → ")
+            let procKey = proc.isEmpty ? "未知进程" : proc
             Self.add(&byDomain, Self.hostOnly(host), du, dd)
-            Self.add(&byProcess, proc.isEmpty ? "未知进程" : proc, du, dd)
+            Self.add(&byProcess, procKey, du, dd)
+            let ppath = Self.procPath(m)   // 记录路径供「应用」维度取图标
+            if !ppath.isEmpty { processPaths[procKey] = ppath }
             Self.add(&byNetwork, network.isEmpty ? "—" : network.uppercased(), du, dd)
             Self.add(&byChain, chain.isEmpty ? "—" : chain, du, dd)
         }
@@ -150,6 +155,7 @@ final class TrafficMonitor {
     /// 清零所有维度统计。
     func resetStats() {
         byDomain = [:]; byProcess = [:]; byNetwork = [:]; byChain = [:]
+        processPaths = [:]
         lastConnBytes = [:]
     }
 
@@ -162,12 +168,18 @@ final class TrafficMonitor {
     /// sing-box 在 macOS 可能给 processPath 附加 " (用户名)" 后缀 → 每行都带，去掉。
     private nonisolated static let userSuffix = " (\(NSUserName()))"
 
-    /// 从连接 metadata 提取进程名：优先 processPath 末段，退回 process；去掉用户名后缀。
+    /// 干净的可执行全路径（去掉 sing-box 附加的用户名后缀）；无则空串。
+    nonisolated static func procPath(_ m: [String: Any]) -> String {
+        var p = (m["processPath"] as? String) ?? ""
+        if p.hasSuffix(userSuffix) { p.removeLast(userSuffix.count) }
+        return p
+    }
+
+    /// 从连接 metadata 提取进程名：优先 processPath 末段，退回 process。
     nonisolated static func procName(_ m: [String: Any]) -> String {
-        var name = (m["processPath"] as? String).map { ($0 as NSString).lastPathComponent }
-            ?? (m["process"] as? String) ?? ""
-        if name.hasSuffix(userSuffix) { name.removeLast(userSuffix.count) }
-        return name
+        let p = procPath(m)
+        if !p.isEmpty { return (p as NSString).lastPathComponent }
+        return (m["process"] as? String) ?? ""
     }
 
     /// 去掉 host 结尾的 :port（含 IPv6 字面量 [..]:port），按域名聚合。
