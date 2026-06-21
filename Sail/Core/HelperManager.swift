@@ -59,6 +59,22 @@ enum HelperManager {
         return false
     }
 
+    /// 把（已在用户态校验过的）内核二进制同步到 root-only 路径，供 TUN/helper 以 root 运行。
+    /// 需一次管理员授权（osascript）——这是信任边界：不让 helper 自动拷用户可写文件以 root 运行（即原 setuid 漏洞）。
+    static func installPrivilegedKernel(from src: String) async -> Bool {
+        guard FileManager.default.fileExists(atPath: src) else { return false }
+        let cmd = [
+            "set -e",
+            "mkdir -p \(shq(supportDir))",
+            "chown root:wheel \(shq(supportDir))",
+            "chmod 0755 \(shq(supportDir))",
+            "cp \(shq(src)) \(shq(singboxDest))",
+            "chown root:wheel \(shq(singboxDest))",
+            "chmod 0755 \(shq(singboxDest))",
+        ].joined(separator: " ; ")
+        return await runAdmin(cmd)
+    }
+
     /// 卸载：bootout + 删除 helper / plist / root-only 数据（同样全 inline）。
     static func uninstall() async -> Bool {
         let cmd = [

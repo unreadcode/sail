@@ -97,16 +97,27 @@ final class KernelManager {
         }
     }
 
-    /// 重新安装：停内核 → 下载最新并校验替换（install 内部删旧换新，校验全过才删旧）→ 视情况重启内核。
-    /// 用于内核疑似损坏或想强制刷新到最新。注意：TUN/helper 模式下运行的是 root 副本（由特权组件从
-    /// app 包播种），本流程只换用户态二进制，TUN 内核版本需重装特权组件才会更新。
+    /// 重新安装：停内核 → 下载最新并校验替换（install 内部删旧换新，校验全过才删旧）→
+    /// 若装了特权组件，再把新内核同步到 root 副本（TUN/helper 以 root 跑的就是它，需一次管理员授权）→ 还原运行。
+    /// 用于内核疑似损坏或想强制刷新到最新。
     func reinstall() async {
         guard !busy else { return }
         let runner = KernelRunner.shared
         let wasRunning = runner.runState == .running || runner.runState == .starting
+        let syncPrivileged = HelperManager.isInstalled   // 装了 TUN 服务则同步 root 副本，保持两份一致
 
         if wasRunning { await runner.stop() }     // 先停，释放对二进制的占用，干净替换
         await install()                            // 复用：下载→校验→原子换新（失败则旧二进制保留）
+
+        // TUN/helper：把刚校验落盘的新内核同步到 root-only 副本（经管理员授权的特权拷贝）
+        if syncPrivileged, errorMessage.isEmpty {
+            busy = true   // install() 已退出 busy，这里自管一段，卡片显示进行中而非空闲
+            statusMessage = "同步特权内核副本（需管理员授权）…"
+            let ok = await HelperManager.installPrivilegedKernel(from: binaryURL.path)
+            busy = false
+            if !ok { errorMessage = "特权内核副本同步失败（未授权？）——TUN 模式仍会用旧内核" }
+        }
+
         if wasRunning { await runner.start() }     // 还原运行：成功跑新内核，失败回退跑旧内核
     }
 
