@@ -29,4 +29,7 @@ Package.resolved
 ## 内核二进制不入库：由 scripts/fetch-kernel.sh 在构建/打包前在线拉取并内置
 Sail/Resources/sing-box
 
+## geo 规则集（.srs）不入库：由 scripts/fetch-georules.sh 在构建/打包前在线拉取并内置
+Sail/Resources/*.srs
+
 CLAUDE.md

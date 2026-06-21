@@ -16,6 +16,9 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 echo "▶ 准备内核（在线拉取并内置）…"
 scripts/fetch-kernel.sh
 
+echo "▶ 准备 geo 规则集（在线拉取并内置）…"
+scripts/fetch-georules.sh
+
 echo "▶ 构建 Release…"
 # 不重定向到 /dev/null：CI 上构建失败时要能看到真实编译/签名错误
 xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" -configuration Release \

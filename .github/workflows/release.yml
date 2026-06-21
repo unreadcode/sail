@@ -25,6 +25,9 @@ jobs:
       - name: 拉取 sing-box 内核
         run: scripts/fetch-kernel.sh
 
+      - name: 拉取 geo 规则集
+        run: scripts/fetch-georules.sh
+
       - name: 打包 DMG
         run: scripts/make-dmg.sh "$PWD/Sail.dmg"
 
