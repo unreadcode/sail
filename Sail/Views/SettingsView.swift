@@ -2,6 +2,8 @@ import SwiftUI
 
 /// 设置页面：应用常规偏好（持久化到 SettingsStore）。
 struct SettingsView: View {
+    @Environment(\.openURL) private var openURL
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 36) {
@@ -33,13 +35,16 @@ struct SettingsView: View {
         .scrollIndicators(.hidden)
         .toolbar {
             ToolbarItem {
-                Link(destination: URL(string: "https://github.com/unreadcode/sail")!) {
+                Button {
+                    openURL(URL(string: "https://github.com/unreadcode/sail")!)
+                } label: {
                     Image("GitHubMark")
                         .renderingMode(.template)
                         .resizable()
                         .scaledToFit()
-                        .frame(width: 16, height: 16)
+                        .frame(width: 15, height: 15)
                 }
+                .buttonStyle(.plain)
                 .help("在 GitHub 查看源码")
             }
         }
