@@ -535,12 +535,12 @@ private struct KernelCard: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(kernel.busy)
                     } else {
-                        // 已安装且无可用更新：仅展示状态，不提供重新安装（重装请走卸载→安装）
-                        Button {} label: {
-                            Label(kernel.upToDate ? "已是最新" : "已安装", systemImage: "checkmark")
+                        // 已安装且无可用更新：提供重新安装（停内核→下载最新→换新→重启），用于损坏修复 / 强制刷新
+                        Button { Task { await kernel.reinstall() } } label: {
+                            Label("重新安装", systemImage: "arrow.triangle.2.circlepath")
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(true)
+                        .buttonStyle(.bordered)
+                        .disabled(kernel.busy)
                     }
                     Button("检查更新") { Task { await kernel.refresh() } }
                         .disabled(kernel.busy)

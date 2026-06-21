@@ -97,6 +97,19 @@ final class KernelManager {
         }
     }
 
+    /// 重新安装：停内核 → 下载最新并校验替换（install 内部删旧换新，校验全过才删旧）→ 视情况重启内核。
+    /// 用于内核疑似损坏或想强制刷新到最新。注意：TUN/helper 模式下运行的是 root 副本（由特权组件从
+    /// app 包播种），本流程只换用户态二进制，TUN 内核版本需重装特权组件才会更新。
+    func reinstall() async {
+        guard !busy else { return }
+        let runner = KernelRunner.shared
+        let wasRunning = runner.runState == .running || runner.runState == .starting
+
+        if wasRunning { await runner.stop() }     // 先停，释放对二进制的占用，干净替换
+        await install()                            // 复用：下载→校验→原子换新（失败则旧二进制保留）
+        if wasRunning { await runner.start() }     // 还原运行：成功跑新内核，失败回退跑旧内核
+    }
+
     /// 卸载本地内核
     func remove() async {
         guard !busy else { return }
