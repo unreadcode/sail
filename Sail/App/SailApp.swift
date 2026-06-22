@@ -19,6 +19,7 @@ struct SailApp: App {
 /// 应用级钩子：菜单栏（托盘）图标、静默启动、关窗收进托盘、退出收尾。
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
+    private let trayMenu = NSMenu()
     private weak var mainWindow: NSWindow?
 
     // 单实例文件锁：第一个实例持锁到进程退出（fd 故意不关）；进程死亡时 OS 自动释放，无残留。
@@ -134,10 +135,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let icon = NSImage(systemSymbolName: "sailboat.fill", accessibilityDescription: "Sail")
         icon?.isTemplate = true   // 跟随菜单栏明暗自动反色，保证可见
         item.button?.image = icon
-        let menu = NSMenu()
-        menu.delegate = self      // 打开前动态重建，刷新勾选状态
-        item.menu = menu
+        trayMenu.delegate = self  // 打开前动态重建，刷新勾选状态
+        // 不设 item.menu（否则左右键都弹菜单）。改为按钮 action：左键呼出主界面，右键弹菜单。
+        item.button?.target = self
+        item.button?.action = #selector(statusItemClicked)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         statusItem = item
+    }
+
+    /// 左键 → 显示主界面；右键 / Control+左键 → 弹托盘菜单。
+    @objc private func statusItemClicked() {
+        let e = NSApp.currentEvent
+        let isRight = e?.type == .rightMouseUp || (e?.modifierFlags.contains(.control) ?? false)
+        if isRight, let button = statusItem?.button {
+            trayMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
+        } else {
+            showMainWindow()
+        }
     }
 
     // 每次打开托盘菜单前重建，反映当前模式/开关
