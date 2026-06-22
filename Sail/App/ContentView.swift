@@ -76,7 +76,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+            .navigationSplitViewColumnWidth(200)   // 固定 200（最窄）：侧栏不可拖宽，展开时详情页挤压最小，避免重排卡顿
         } detail: {
             DetailContainer(item: selection)
         }
