@@ -1,42 +1,56 @@
 import SwiftUI
 
-/// 设置页面：应用常规偏好（持久化到 SettingsStore）。
+/// 设置页面：应用常规偏好（持久化到 SettingsStore）。顶部 Tab 切换分区，避免单页过长。
 struct SettingsView: View {
     @Environment(\.openURL) private var openURL
+    @State private var tab: Tab = .general
+
+    enum Tab: String, CaseIterable, Identifiable {
+        case general, singBox, advanced, mixin, kernel, about
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .general: return "常规"
+            case .singBox: return "sing-box"
+            case .advanced: return "高级"
+            case .mixin: return "Mixin"
+            case .kernel: return "内核"
+            case .about: return "关于"
+            }
+        }
+        var icon: String {
+            switch self {
+            case .general: return "gearshape"
+            case .singBox: return "shippingbox"
+            case .advanced: return "slider.horizontal.3"
+            case .mixin: return "curlybraces"
+            case .kernel: return "cpu"
+            case .about: return "info.circle"
+            }
+        }
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 36) {
+        VStack(spacing: 0) {
+            tabBar
+            Divider()
+            ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    SectionHeader("常规")
-                    GeneralCard()
+                    switch tab {
+                    case .general: GeneralCard()
+                    case .singBox: SingBoxCard()
+                    case .advanced: AdvancedCard()
+                    case .mixin: MixinCard()
+                    case .kernel: KernelCard()
+                    case .about: AboutCard()
+                    }
                 }
-                VStack(alignment: .leading, spacing: 16) {
-                    SectionHeader("sing-box")
-                    SingBoxCard()
-                }
-                VStack(alignment: .leading, spacing: 16) {
-                    SectionHeader("高级")
-                    AdvancedCard()
-                }
-                VStack(alignment: .leading, spacing: 16) {
-                    SectionHeader("Mixin 配置覆盖")
-                    MixinCard()
-                }
-                VStack(alignment: .leading, spacing: 16) {
-                    SectionHeader("内核")
-                    KernelCard()
-                }
-                VStack(alignment: .leading, spacing: 16) {
-                    SectionHeader("关于")
-                    AboutCard()
-                }
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
+                .padding(24)
             }
-            .frame(maxWidth: 720)
-            .frame(maxWidth: .infinity)
-            .padding(24)
+            .scrollIndicators(.hidden)
         }
-        .scrollIndicators(.hidden)
         .toolbar {
             ToolbarItem {
                 Button {
@@ -51,6 +65,34 @@ struct SettingsView: View {
                 .help("在 GitHub 查看源码")
             }
         }
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 4) {
+            ForEach(Tab.allCases) { t in
+                let selected = t == tab
+                Button {
+                    tab = t
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: t.icon).font(.system(size: 12, weight: .medium))
+                        Text(t.label).font(.system(size: 13, weight: .medium))
+                    }
+                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(selected ? Color.accentColor.opacity(0.12) : Color.clear)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 }
 
