@@ -21,8 +21,11 @@ scripts/fetch-georules.sh
 
 echo "▶ 构建 Release…"
 # stdout 静音（编译日志太吵）；stderr 保留 + set -e：真出错仍会报错并中止
+# 强制 ad-hoc 签名构建：不依赖工程里的开发者团队/证书（CI 没有、本地证书也可能吊销），
+# 反正下面会整体 ad-hoc 重签。否则工程 Release 配 Automatic/Apple Development 时 CI 会签名失败。
 xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" -configuration Release \
-  -destination 'generic/platform=macOS' -derivedDataPath "$DD" build >/dev/null
+  -destination 'generic/platform=macOS' -derivedDataPath "$DD" build >/dev/null \
+  CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="" PROVISIONING_PROFILE_SPECIFIER=""
 [ -d "$APP" ] || { echo "✗ 未找到 $APP"; exit 1; }
 
 # 编译特权 helper 进 bundle（精简 Swift），并整体重签（含 helper / 内核），保持 ad-hoc 签名完整
