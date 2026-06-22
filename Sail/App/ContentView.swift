@@ -76,10 +76,11 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
+            .navigationSplitViewColumnWidth(220)   // 固定宽度：去掉展开时 min/ideal/max 的二次宽度解算（卡顿来源）
         } detail: {
             DetailContainer(item: selection)
         }
+        .navigationSplitViewStyle(.balanced)
     }
 }
 
