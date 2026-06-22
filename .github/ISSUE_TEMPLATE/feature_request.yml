@@ -1,0 +1,32 @@
+name: ✨ 功能建议
+description: 提一个新功能或改进想法
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎建议！提交前请看一下 README 的「待办」和 [已有 issue](https://github.com/unreadcode/sail/issues?q=is%3Aissue)，避免重复。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题 / 场景
+      description: 你在什么情况下需要这个功能？现在为什么不方便？
+      placeholder: 例：希望按节点分组自动选最快（urltest），现在只能手动切单个节点。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的方案
+      description: 你希望它怎么工作？参考 Clash Verge / sing-box 的话可以贴出来
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 备选方案 / 其它补充
+    validations:
+      required: false

@@ -1,0 +1,89 @@
+name: 🐛 Bug 反馈
+description: 报告一个问题（崩溃、连不上、CPU 高、TUN 起不来等）
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量填全下面的信息——尤其是 **macOS 版本** 和 **日志**，多数问题靠这两项就能定位。
+        提交前请先搜索一下 [已有 issue](https://github.com/unreadcode/sail/issues?q=is%3Aissue)，避免重复。
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 问题描述
+      description: 发生了什么？你期望的行为是什么？
+      placeholder: |
+        例：开启虚拟网卡(TUN)后报「启动失败」，网络断开。
+        期望：TUN 正常接管流量。
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开 Sail
+        2. 在概览页打开「虚拟网卡(TUN)」
+        3. 弹出授权后……
+    validations:
+      required: true
+
+  - type: input
+    id: sail-version
+    attributes:
+      label: Sail 版本
+      description: 见「设置 → 关于」，或菜单栏托盘
+      placeholder: 例：1.1.11
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS 版本
+      description: 苹果菜单  → 关于本机
+      placeholder: 例：macOS 15.5（Sequoia）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: chip
+    attributes:
+      label: 芯片
+      description: Sail 目前仅支持 Apple 芯片（arm64），Intel 暂不支持
+      options:
+        - Apple 芯片（M 系列）
+        - Intel
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: network-mode
+    attributes:
+      label: 出问题时开启了哪些开关？
+      options:
+        - label: 系统代理
+        - label: 虚拟网卡（TUN）
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: |
+        从「日志」页复制相关内容粘贴到这里。TUN(特权 helper)相关问题也可附上
+        `/Library/Application Support/Sail/kernel.log` 的尾部。
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 其它补充
+      description: 截图、订阅协议类型（vless/trojan/hysteria2…）、是否多账户/多窗口等
+    validations:
+      required: false
