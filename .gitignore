@@ -33,3 +33,6 @@ Sail/Resources/sing-box
 Sail/Resources/*.srs
 
 CLAUDE.md
+# 本地打包产物
+Sail.dmg
+Sail.app.zip
