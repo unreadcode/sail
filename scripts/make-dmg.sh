@@ -28,7 +28,14 @@ xcodebuild -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" -configuration Rel
 # 编译特权 helper 进 bundle（精简 Swift），并整体重签（含 helper / 内核），保持 ad-hoc 签名完整
 echo "▶ 编译并内嵌特权 helper…"
 mkdir -p "$APP/Contents/Helpers"
-xcrun swiftc -O Helper/main.swift -o "$APP/Contents/Helpers/sail-helper"
+# 部署目标必须钉死 14.0：不带 -target 会跟构建机(CI=macOS 26)走，链到 26-only 的
+# libswift_DarwinFoundation3.dylib，低于 26 的机器加载即崩、TUN 起不来（v1.1.5/1.1.6 的坑）。
+env MACOSX_DEPLOYMENT_TARGET=14.0 xcrun swiftc -O -target arm64-apple-macos14.0 Helper/main.swift -o "$APP/Contents/Helpers/sail-helper"
+# 自检：产物若仍链接 macOS 26 专属库，直接中止打包，绝不发出在旧系统崩溃的包。
+if otool -L "$APP/Contents/Helpers/sail-helper" | grep -qi DarwinFoundation3; then
+  echo "✗ sail-helper 链接了 macOS 26 专属库，旧系统会崩，打包中止"; exit 1
+fi
+echo "  sail-helper minos=$(otool -l "$APP/Contents/Helpers/sail-helper" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')（应为 14.0）"
 codesign --force --sign - "$APP/Contents/Helpers/sail-helper"
 codesign --force --deep --sign - "$APP"
 
