@@ -17,6 +17,29 @@ enum ClashYAMLParser {
         return list.compactMap { ($0 as? [String: Any]).flatMap(node(from:)) }
     }
 
+    /// 订阅自带的路由：rules（规则字符串数组）。
+    nonisolated static func rules(_ yaml: String) -> [String] {
+        (topLevelValue(named: "rules", in: yaml) as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+
+    /// rule-providers：名称 → { type / behavior / url / format … }。
+    nonisolated static func ruleProviders(_ yaml: String) -> [String: [String: Any]] {
+        guard let v = topLevelValue(named: "rule-providers", in: yaml) as? [String: Any] else { return [:] }
+        var out: [String: [String: Any]] = [:]
+        for (k, val) in v { if let d = val as? [String: Any] { out[k] = d } }
+        return out
+    }
+
+    /// proxy-groups：名称 → proxies 列表（首项即默认指向，供解析去向）。
+    nonisolated static func proxyGroups(_ yaml: String) -> [(name: String, proxies: [String])] {
+        guard let v = topLevelValue(named: "proxy-groups", in: yaml) as? [Any] else { return [] }
+        return v.compactMap { item in
+            guard let g = item as? [String: Any], let name = g["name"] as? String else { return nil }
+            let proxies = (g["proxies"] as? [Any])?.compactMap { $0 as? String } ?? []
+            return (name, proxies)
+        }
+    }
+
     /// 取出 proxy-providers 中 type: http 的 url 列表（用于跟随抓取真实节点）。
     nonisolated static func providerURLs(_ yaml: String) -> [String] {
         guard let value = topLevelValue(named: "proxy-providers", in: yaml),
@@ -100,6 +123,39 @@ enum ClashYAMLParser {
             o["password"] = str(p["password"])
             o["tls"] = tls(p, defaultSNI: str(p["sni"]))
 
+        case "socks5", "socks":
+            o["type"] = "socks"
+            o["version"] = "5"
+            if !str(p["username"]).isEmpty { o["username"] = str(p["username"]) }
+            if !str(p["password"]).isEmpty { o["password"] = str(p["password"]) }
+
+        case "http", "https":
+            o["type"] = "http"
+            if !str(p["username"]).isEmpty { o["username"] = str(p["username"]) }
+            if !str(p["password"]).isEmpty { o["password"] = str(p["password"]) }
+            if bool(p["tls"]) || type == "https" { o["tls"] = tls(p, defaultSNI: str(p["sni"])) }
+
+        case "ssh":
+            o["type"] = "ssh"
+            if !str(p["username"]).isEmpty { o["user"] = str(p["username"]) }
+            if !str(p["password"]).isEmpty { o["password"] = str(p["password"]) }
+            if !str(p["private-key"]).isEmpty { o["private_key"] = str(p["private-key"]) }
+            if let hostKey = p["host-key"] as? [Any], !hostKey.isEmpty { o["host_key"] = hostKey.map { str($0) } }
+
+        case "hysteria":
+            o["type"] = "hysteria"
+            // 鉴权：auth-str（明文）或 auth_str；Clash 用 auth-str
+            if !str(p["auth-str"]).isEmpty { o["auth_str"] = str(p["auth-str"]) }
+            else if !str(p["auth_str"]).isEmpty { o["auth_str"] = str(p["auth_str"]) }
+            // 带宽（sing-box hysteria 需要；Clash 形如 "100 Mbps" 或纯数字）
+            let up = hysteriaMbps(p["up"]), down = hysteriaMbps(p["down"])
+            if up > 0 { o["up_mbps"] = up }
+            if down > 0 { o["down_mbps"] = down }
+            if !str(p["obfs"]).isEmpty { o["obfs"] = str(p["obfs"]) }
+            var t = tls(p, defaultSNI: str(p["sni"]))
+            t["enabled"] = true
+            o["tls"] = t
+
         default:
             return nil // 暂不支持的协议（mieru / ssr / wireguard 等 sing-box 无对应出站）
         }
@@ -164,6 +220,14 @@ enum ClashYAMLParser {
         if let b = v as? Bool { return b }
         if let s = v as? String { return s == "true" || s == "1" }
         return false
+    }
+
+    /// hysteria 带宽：Clash 可能写成 "100 Mbps" / "100" / 数字，取前导数字当 Mbps。
+    nonisolated private static func hysteriaMbps(_ v: Any?) -> Int {
+        if let i = v as? Int { return i }
+        guard let s = v as? String else { return 0 }
+        let num = s.prefix { $0.isNumber }
+        return Int(num) ?? 0
     }
 
     // MARK: - 迷你 YAML 解析

@@ -52,6 +52,9 @@ enum ShareLinkParser {
         case "vmess": return parseVmess(link)
         case "vless": return parseVless(link)
         case "trojan": return parseTrojan(link)
+        case "hysteria2", "hy2": return parseHysteria2(link, scheme: scheme + "://")
+        case "tuic": return parseTuic(link)
+        case "anytls": return parseAnyTLS(link)
         default: return nil
         }
     }
@@ -172,6 +175,72 @@ enum ShareLinkParser {
             outbound["transport"] = t
         }
         return node(name: parsed.name, type: "trojan", server: parsed.host, port: parsed.port, outbound: outbound)
+    }
+
+    // MARK: - hysteria2 / hy2
+
+    nonisolated private static func parseHysteria2(_ link: String, scheme: String) -> ProxyNode? {
+        guard let p = parseUserHostQuery(link, scheme: scheme) else { return nil }
+        let q = p.query
+        var t: [String: Any] = ["enabled": true]
+        let sni = q["sni"] ?? q["peer"] ?? ""
+        if !sni.isEmpty { t["server_name"] = sni }
+        if q["insecure"] == "1" || q["allowInsecure"] == "1" { t["insecure"] = true }
+        if let alpn = q["alpn"], !alpn.isEmpty { t["alpn"] = alpn.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } }
+        var o: [String: Any] = [
+            "type": "hysteria2", "tag": p.name,
+            "server": p.host, "server_port": p.port,
+            "password": p.user.removingPercentEncoding ?? p.user,
+            "tls": t,
+        ]
+        if let obfs = q["obfs"], !obfs.isEmpty {
+            o["obfs"] = ["type": obfs, "password": q["obfs-password"] ?? q["obfs_password"] ?? ""]
+        }
+        return node(name: p.name, type: "hysteria2", server: p.host, port: p.port, outbound: o)
+    }
+
+    // MARK: - tuic
+
+    nonisolated private static func parseTuic(_ link: String) -> ProxyNode? {
+        guard let p = parseUserHostQuery(link, scheme: "tuic://") else { return nil }
+        let q = p.query
+        // user 形如 uuid:password
+        let creds = p.user.split(separator: ":", maxSplits: 1).map(String.init)
+        let uuid = creds.first ?? ""
+        let password = (creds.count > 1 ? creds[1] : "").removingPercentEncoding ?? (creds.count > 1 ? creds[1] : "")
+        guard !uuid.isEmpty else { return nil }
+        var t: [String: Any] = ["enabled": true]
+        let sni = q["sni"] ?? q["peer"] ?? ""
+        if !sni.isEmpty { t["server_name"] = sni }
+        if q["allow_insecure"] == "1" || q["allowInsecure"] == "1" || q["insecure"] == "1" { t["insecure"] = true }
+        if let alpn = q["alpn"], !alpn.isEmpty { t["alpn"] = alpn.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } }
+        var o: [String: Any] = [
+            "type": "tuic", "tag": p.name,
+            "server": p.host, "server_port": p.port,
+            "uuid": uuid, "password": password, "tls": t,
+        ]
+        if let cc = q["congestion_control"] ?? q["congestion-control"], !cc.isEmpty { o["congestion_control"] = cc }
+        if let urm = q["udp_relay_mode"] ?? q["udp-relay-mode"], !urm.isEmpty { o["udp_relay_mode"] = urm }
+        return node(name: p.name, type: "tuic", server: p.host, port: p.port, outbound: o)
+    }
+
+    // MARK: - anytls
+
+    nonisolated private static func parseAnyTLS(_ link: String) -> ProxyNode? {
+        guard let p = parseUserHostQuery(link, scheme: "anytls://") else { return nil }
+        let q = p.query
+        var t: [String: Any] = ["enabled": true]
+        let sni = q["sni"] ?? q["peer"] ?? ""
+        if !sni.isEmpty { t["server_name"] = sni }
+        if q["insecure"] == "1" || q["allowInsecure"] == "1" { t["insecure"] = true }
+        if let alpn = q["alpn"], !alpn.isEmpty { t["alpn"] = alpn.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) } }
+        let o: [String: Any] = [
+            "type": "anytls", "tag": p.name,
+            "server": p.host, "server_port": p.port,
+            "password": p.user.removingPercentEncoding ?? p.user,
+            "tls": t,
+        ]
+        return node(name: p.name, type: "anytls", server: p.host, port: p.port, outbound: o)
     }
 
     // MARK: - 通用构件
