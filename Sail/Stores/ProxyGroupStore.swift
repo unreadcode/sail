@@ -27,9 +27,29 @@ final class ProxyGroupStore {
 
     private(set) var groups: [Group] = []
     private(set) var loaded = false
+    private(set) var live = false                 // true=来自运行中内核的实时数据；false=离线读订阅持久化结构
     private(set) var testing: Set<String> = []   // 正在测速的组名
 
-    private init() {}
+    /// 用户对各分组的手动选择（groupName → 成员 tag）。持久化：离线也能选，
+    /// 且作为 makeConfig 里 selector 的 default —— 内核（重）启动后即生效、跨重启不丢。
+    private(set) var overrides: [String: String] = [:]
+    private static var overridesURL: URL { KernelPaths.supportDir.appendingPathComponent("group-selections.json") }
+
+    private init() { loadOverrides() }
+
+    private func loadOverrides() {
+        guard let data = try? Data(contentsOf: Self.overridesURL),
+              let dict = try? JSONDecoder().decode([String: String].self, from: data) else { return }
+        overrides = dict
+    }
+
+    private func setOverride(_ group: String, _ member: String) {
+        overrides[group] = member
+        try? FileManager.default.createDirectory(at: KernelPaths.supportDir, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(overrides) {
+            try? data.write(to: Self.overridesURL, options: .atomic)
+        }
+    }
 
     private var port: Int { TrafficMonitor.apiPort }
 
@@ -48,14 +68,64 @@ final class ProxyGroupStore {
 
     func refresh() async {
         guard KernelRunner.shared.isRunning else {
-            if !groups.isEmpty { groups = [] }
-            loaded = true
+            loadPersisted()   // 内核没跑：展示订阅持久化的分组结构（无延迟、不可切换）
             return
         }
-        guard let raw = await Self.fetchProxies(port: port) else { return }
-        let parsed = Self.parse(raw)
-        if parsed != groups { groups = parsed }   // 内容不变就不触发重排（轮询时常态）
+        guard let raw = await Self.fetchProxies(port: port) else { return }  // 内核刚起、clash_api 未应答：保留现状不清空
+        // 顺序只在首屏按内核出站顺序（= 订阅定义顺序）定一次，之后固定，不每帧重排
+        let order = (raw["GLOBAL"] as? [String: Any])?["all"] as? [String] ?? []
+        applyKeepingOrder(Self.parse(raw), firstLoadOrder: order)
+        live = true
         loaded = true
+    }
+
+    /// 把新解析的分组并入现有列表：顺序一旦确定就固定。首屏按 firstLoadOrder 排一次；
+    /// 之后轮询只就地更新内容、新增排末尾、消失的移除——不再排序，省开销也不闪动。
+    private func applyKeepingOrder(_ fresh: [Group], firstLoadOrder order: [String]) {
+        let next: [Group]
+        if groups.isEmpty {
+            next = Self.orderGroups(fresh, by: order)
+        } else {
+            let byName = Dictionary(fresh.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
+            var merged = groups.compactMap { byName[$0.name] }                 // 维持现有顺序
+            let existing = Set(groups.map(\.name))
+            let newOnes = fresh.filter { !existing.contains($0.name) }         // 新增的按定义顺序接在末尾（parse 本身无序）
+            merged += Self.orderGroups(newOnes, by: order)
+            next = merged
+        }
+        if next != groups { groups = next }
+    }
+
+    /// 离线加载：从「选中订阅」已转换落盘的 proxy-groups（subrules/<id>/route.json）构建分组结构。
+    /// 复用 KernelRunner 的 nodeOutbounds/groupOutbounds（与 makeConfig 同一套），保证成员名与运行态一致。
+    func loadPersisted() {
+        guard let sub = SubscriptionStore.shared.selectedSubscription, !sub.nodes.isEmpty,
+              let r = ClashRuleImport.importedRoute(dir: SubscriptionStore.subrulesDir(sub.id)),
+              !r.groups.isEmpty else {
+            if !groups.isEmpty { groups = [] }
+            live = false; loaded = true
+            return
+        }
+        let (nodeOuts, nameToTag) = KernelRunner.nodeOutbounds(sub.nodes)
+        let nodeTags = nodeOuts.compactMap { $0["tag"] as? String }
+        let groupOuts = KernelRunner.groupOutbounds(r.groups, allNodeTags: nodeTags, nameToTag: nameToTag, overrides: overrides)
+        let parsed = Self.parsePersisted(groupOuts)
+        if parsed != groups { groups = parsed }
+        live = false; loaded = true
+    }
+
+    /// 把 groupOutbounds 产出的 selector/url-test 出站字典解析成 Group（离线：无延迟，now 取 default/首个）。
+    nonisolated private static func parsePersisted(_ groupOuts: [[String: Any]]) -> [Group] {
+        let groupTags = Set(groupOuts.compactMap { $0["tag"] as? String })
+        let result: [Group] = groupOuts.compactMap { o in
+            guard let tag = o["tag"] as? String, let type = (o["type"] as? String)?.lowercased() else { return nil }
+            let kind: Group.Kind = (type == "selector") ? .selector : .urltest
+            let memberTags = (o["outbounds"] as? [String]) ?? []
+            let now = (o["default"] as? String) ?? memberTags.first ?? ""
+            let members = memberTags.map { Member(name: $0, delay: nil, isGroup: groupTags.contains($0)) }
+            return Group(name: tag, kind: kind, now: now, members: members)
+        }
+        return result   // groupOuts 已是 route.json 里 r.groups 的定义顺序，保持不动
     }
 
     nonisolated private static func fetchProxies(port: Int) async -> [String: Any]? {
@@ -95,20 +165,31 @@ final class ProxyGroupStore {
             let members = all.map { Member(name: $0, delay: lastDelay($0), isGroup: isGroup($0)) }
             result.append(Group(name: name, kind: kind, now: (p["now"] as? String) ?? "", members: members))
         }
-        // selector（可手动切）排前，其余按名称稳定排序
-        return result.sorted { a, b in
-            if (a.kind == .selector) != (b.kind == .selector) { return a.kind == .selector }
-            return a.name.localizedStandardCompare(b.name) == .orderedAscending
-        }
+        return result   // 不在此排序：顺序由 refresh 首屏定一次后固定（见 applyKeepingOrder）
+    }
+
+    /// 按给定顺序（内核出站顺序 = 订阅 proxy-groups 定义顺序）排列分组；不在表中的稳定排末尾。
+    nonisolated private static func orderGroups(_ groups: [Group], by order: [String]) -> [Group] {
+        guard !order.isEmpty else { return groups }
+        var index: [String: Int] = [:]
+        for (i, tag) in order.enumerated() where index[tag] == nil { index[tag] = i }
+        return groups.enumerated().sorted {
+            let ia = index[$0.element.name] ?? Int.max
+            let ib = index[$1.element.name] ?? Int.max
+            return ia != ib ? ia < ib : $0.offset < $1.offset
+        }.map(\.element)
     }
 
     // MARK: 切换 selector
 
     func select(_ group: Group, _ member: String) async {
         guard group.kind == .selector, group.now != member else { return }
-        if await Self.put(port: port, group: group.name, name: member),
-           let i = groups.firstIndex(where: { $0.id == group.id }) {
-            groups[i].now = member   // 立即反映，随后 refresh 再校准
+        setOverride(group.name, member)                          // 持久化选择（离线也记住，配置生成时作 selector default）
+        if let i = groups.firstIndex(where: { $0.id == group.id }) {
+            groups[i].now = member                               // 立即反映
+        }
+        if live {
+            _ = await Self.put(port: port, group: group.name, name: member)   // 内核在跑：运行时立即切换
         }
         await refresh()
     }

@@ -85,7 +85,7 @@ final class SubscriptionStore {
             saveLastNodes()
         }
         if KernelRunner.shared.isRunning {
-            await KernelRunner.shared.restart()
+            await KernelRunner.shared.restartIfConfigChanged()
         }
     }
 
@@ -160,7 +160,7 @@ final class SubscriptionStore {
             if SettingsStore.shared.importSubscriptionRules, let yaml = result.clashText {
                 await ClashRuleImport.build(yaml: yaml, into: Self.subrulesDir(id), hasProxy: true, proxyPort: proxyPort)
                 if KernelRunner.shared.isRunning, selectedSubscriptionID == id || selectedWasHere {
-                    await KernelRunner.shared.restart()
+                    await KernelRunner.shared.restartIfConfigChanged()
                 }
             }
             // 选中态对账：选中节点原属本订阅、但刷新后已不存在 → 回退到本订阅第一个（运行中会热切换）
@@ -226,7 +226,7 @@ final class SubscriptionStore {
             selectedNode = nil
             saveSelection()
             if KernelRunner.shared.isRunning {
-                Task { await KernelRunner.shared.restart() }
+                Task { await KernelRunner.shared.restartIfConfigChanged() }
             }
         }
         save()

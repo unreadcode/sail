@@ -183,23 +183,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         menu.addItem(trayItem("显示主界面", #selector(showMainWindow)))
         menu.addItem(.separator())
 
-        // 当前节点 + 切换节点子菜单
+        // 代理分组（订阅自带 proxy-groups）：每组一个子菜单，selector 组可点选成员切换、
+        // url-test 组只读高亮。无分组时回退到扁平的「切换节点」列表。
+        // 后台刷新一次，保证下次打开托盘的分组/选择是最新的（窗口可见时已在轮询）。
+        Task { await ProxyGroupStore.shared.refresh() }
         let store = SubscriptionStore.shared
-        let nodeHeader = NSMenuItem(title: "节点：\(store.selectedNode?.label ?? "未选择")", action: nil, keyEquivalent: "")
-        nodeHeader.isEnabled = false
-        menu.addItem(nodeHeader)
-        if let sub = store.selectedSubscription, !sub.nodes.isEmpty {
-            let switchItem = NSMenuItem(title: "切换节点", action: nil, keyEquivalent: "")
-            let submenu = NSMenu()
-            for node in sub.nodes {
-                let ni = NSMenuItem(title: node.label, action: #selector(selectNodeFromTray(_:)), keyEquivalent: "")
-                ni.target = self
-                ni.representedObject = node.outboundJSON
-                ni.state = store.isSelected(node) ? .on : .off
-                submenu.addItem(ni)
+        let groups = ProxyGroupStore.shared.groups
+        if !groups.isEmpty {
+            // 顶层只放一个「分组」二级菜单，展开才是各分组；再展开是组内成员（三级），避免菜单被一堆分组刷满
+            let groupsRoot = NSMenuItem(title: "分组", action: nil, keyEquivalent: "")
+            let groupsMenu = NSMenu()
+            for group in groups {
+                let isSelector = group.kind == .selector
+                let groupItem = NSMenuItem(title: Self.trayTruncate(group.name), action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+                if !isSelector {
+                    let note = NSMenuItem(title: "自动（内核按延迟选择）", action: nil, keyEquivalent: "")
+                    note.isEnabled = false
+                    submenu.addItem(note)
+                }
+                for m in group.members {
+                    let mi = NSMenuItem(title: Self.trayTruncate(m.name),
+                                        action: isSelector ? #selector(selectGroupMemberFromTray(_:)) : nil,
+                                        keyEquivalent: "")
+                    mi.target = self
+                    mi.representedObject = ["group": group.name, "member": m.name]
+                    mi.state = m.name == group.now ? .on : .off
+                    mi.isEnabled = isSelector
+                    submenu.addItem(mi)
+                }
+                groupItem.submenu = submenu
+                groupsMenu.addItem(groupItem)
             }
-            switchItem.submenu = submenu
-            menu.addItem(switchItem)
+            groupsRoot.submenu = groupsMenu
+            menu.addItem(groupsRoot)
+        } else {
+            let nodeHeader = NSMenuItem(title: "节点：\(store.selectedNode?.label ?? "未选择")", action: nil, keyEquivalent: "")
+            nodeHeader.isEnabled = false
+            menu.addItem(nodeHeader)
+            if let sub = store.selectedSubscription, !sub.nodes.isEmpty {
+                let switchItem = NSMenuItem(title: "切换节点", action: nil, keyEquivalent: "")
+                let submenu = NSMenu()
+                for node in sub.nodes {
+                    let ni = NSMenuItem(title: node.label, action: #selector(selectNodeFromTray(_:)), keyEquivalent: "")
+                    ni.target = self
+                    ni.representedObject = node.outboundJSON
+                    ni.state = store.isSelected(node) ? .on : .off
+                    submenu.addItem(ni)
+                }
+                switchItem.submenu = submenu
+                menu.addItem(switchItem)
+            }
         }
         menu.addItem(.separator())
 
@@ -239,6 +273,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         return mi
     }
 
+    /// 截断过长的菜单文案，避免节点名把托盘菜单撑得很宽。
+    private static func trayTruncate(_ s: String, _ max: Int = 28) -> String {
+        s.count <= max ? s : String(s.prefix(max - 1)) + "…"
+    }
+
     @objc private func selectProxyMode(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let mode = ProxyMode(rawValue: raw) else { return }
         Task { @MainActor in SettingsStore.shared.setRouteMode(mode) }
@@ -269,6 +308,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             if let node = store.allNodes.first(where: { $0.outboundJSON == json }) {
                 await store.selectNode(node)
             }
+        }
+    }
+
+    @objc private func selectGroupMemberFromTray(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: String],
+              let groupName = info["group"], let member = info["member"] else { return }
+        Task { @MainActor in
+            let gs = ProxyGroupStore.shared
+            guard let group = gs.groups.first(where: { $0.name == groupName }) else { return }
+            await gs.select(group, member)
         }
     }
 

@@ -28,6 +28,7 @@ final class KernelRunner {
 
     private var process: Process?
     private var ranViaHelper = false   // 本次内核是否由特权 helper(root) 启动（TUN 模式）
+    private var lastAppliedConfig: String?   // 上次成功启动所用配置（归一化 JSON）；用于「无变化跳过重启」
     private let maxLogLines = 800
 
     // 内核异常退出后的自动重启：限次 + 退避，避免坏配置导致的无限快速重启循环
@@ -108,10 +109,9 @@ final class KernelRunner {
                 ranViaHelper = true
                 process = nil
                 startedAt = Date()
-                runState = .running
                 appendLogs(["[TUN] 内核已由特权 helper 以 root 启动"])
                 startHelperLogTail()   // tail root 内核日志
-                startHelperWatch()     // 监测崩溃并自动重启
+                startHelperWatch()     // 监测崩溃并自动重启（守护在 .running 才动作，启动窗口内空转）
             } else {
                 ranViaHelper = false
                 try writeConfig()
@@ -136,8 +136,15 @@ final class KernelRunner {
                 try proc.run()
                 process = proc
                 startedAt = Date()
-                runState = .running
             }
+
+            // 等 clash_api 真正就绪再转入 .running：内核 bind 端口需时间，过早置 running 会让各处
+            // 轮询（/traffic、/connections、/proxies）打向尚未监听的 9090，刷一屏 connection refused
+            // ——尤其更新订阅触发 restart() 时最明显。期间保持 .starting（isRunning=false），轮询自然不发。
+            await waitForClashAPIReady()
+            guard runState == .starting else { return }   // 期间崩溃/被停 → 已置 stopped/stopping，放弃转 running
+            runState = .running
+            lastAppliedConfig = normalizedConfig()   // 记下本次配置，供后续「无变化跳过重启」比对
 
             // 系统代理开关开启则接管系统代理（与 TUN 独立，可共存）
             if SettingsStore.shared.systemProxyEnabled {
@@ -159,6 +166,35 @@ final class KernelRunner {
     private func disableSystemProxyIfNeeded() {
         if SettingsStore.shared.systemProxyEnabled {
             Task.detached { SystemProxy.disable() }
+        }
+    }
+
+    /// clash_api 端口是否已开始监听。用裸 TCP `connect()` 探测，**不走 URLSession**：
+    /// 对未监听端口发 URLSession 请求会触发 CFNetwork 一整套 `nw_connection ... -1004` stderr 噪声，
+    /// 而裸 socket 连接被拒只是个 errno，安静。内核进程起来到 bind 端口之间有几百 ms 延迟，故需轮询等待。
+    nonisolated private static func portListening(_ port: Int) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(UInt16(truncatingIfNeeded: port).bigEndian)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let r = withUnsafePointer(to: &addr) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return r == 0
+    }
+
+    /// 轮询等待 clash_api 就绪（最多 ~4s）。期间内核崩溃/被停（runState 转出 .starting）即放弃。
+    private func waitForClashAPIReady() async {
+        let port = TrafficMonitor.apiPort
+        for _ in 0..<27 {
+            if runState != .starting { return }
+            if await Task.detached(priority: .utility, operation: { Self.portListening(port) }).value { return }
+            try? await Task.sleep(for: .milliseconds(150))
         }
     }
 
@@ -229,6 +265,23 @@ final class KernelRunner {
             try? await Task.sleep(for: .milliseconds(50))
         }
         await start()
+    }
+
+    /// 仅当「现在生成的配置」与「正在运行的配置」不同才重启；相同则原地不动。
+    /// 用于订阅更新 / 切换订阅等场景：很多更新其实没改动节点或规则，无谓重启只会徒增断流与噪声。
+    func restartIfConfigChanged() async {
+        guard isRunning else { return }
+        if let now = normalizedConfig(), now == lastAppliedConfig {
+            appendLogs(["配置无变化，跳过重启"])
+            return
+        }
+        await restart()
+    }
+
+    /// 当前配置的归一化 JSON（键排序，保证同一份配置每次序列化结果一致，可直接字符串比对）。
+    private func normalizedConfig() -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: makeConfig(), options: [.sortedKeys]) else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// 应用退出时同步收尾，避免遗留孤儿进程（不能 await）。
@@ -434,7 +487,8 @@ final class KernelRunner {
 
     /// 把订阅 proxy-group 定义转成 sing-box selector / url-test 出站。成员名解析为节点 tag / 嵌套组 / direct；
     /// useAll 展开为全部节点；空组兜底为全部节点(或 direct)。
-    nonisolated static func groupOutbounds(_ groups: [[String: Any]], allNodeTags: [String], nameToTag: [String: String]) -> [[String: Any]] {
+    nonisolated static func groupOutbounds(_ groups: [[String: Any]], allNodeTags: [String], nameToTag: [String: String],
+                                           overrides: [String: String] = [:]) -> [[String: Any]] {
         let groupTags = Set(groups.compactMap { $0["tag"] as? String })
         var outs: [[String: Any]] = []
         for g in groups {
@@ -462,7 +516,9 @@ final class KernelRunner {
                 }
                 if let tol = g["tolerance"] as? Int { o["tolerance"] = tol }
             } else {
-                o["default"] = members.first
+                // selector：用户持久化的手动选择优先（须是合法成员），否则配置默认（首个成员）
+                if let ov = overrides[tag], members.contains(ov) { o["default"] = ov }
+                else { o["default"] = members.first }
             }
             outs.append(o)
         }
@@ -494,7 +550,8 @@ final class KernelRunner {
             let (nodeOuts, nameToTag) = Self.nodeOutbounds(sub.nodes)
             let nodeTags = nodeOuts.compactMap { $0["tag"] as? String }
             outbounds += nodeOuts
-            outbounds += Self.groupOutbounds(imp.groups, allNodeTags: nodeTags, nameToTag: nameToTag)
+            outbounds += Self.groupOutbounds(imp.groups, allNodeTags: nodeTags, nameToTag: nameToTag,
+                                             overrides: ProxyGroupStore.shared.overrides)
             outbounds.append(["type": "direct", "tag": "direct"])
             hasProxy = true
             proxyTag = imp.final ?? (imp.groups.first?["tag"] as? String) ?? "direct"

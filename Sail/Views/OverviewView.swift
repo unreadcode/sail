@@ -5,6 +5,8 @@ struct OverviewView: View {
     private let monitor = TrafficMonitor.shared
     @State private var settings = SettingsStore.shared
     @State private var ipInfo = IPInfo.shared
+    @State private var groupStore = ProxyGroupStore.shared
+    @AppStorage("overviewPickedGroup") private var pickedGroup = ""   // 概览操作的分组（空=第一个）；持久化，切页/重启不丢
     @State private var appeared = false
     @State private var kernelVersion = "—"
 
@@ -32,6 +34,13 @@ struct OverviewView: View {
         .scrollIndicators(.hidden)
         .onAppear { appeared = true; Task { await ipInfo.refresh() } }
         .onChange(of: runner.isRunning) { _, _ in Task { await ipInfo.refresh() } }
+        .task {
+            // 概览可见期间轮询代理分组（与分组页一致）；离开自动取消。
+            while !Task.isCancelled {
+                await groupStore.refresh()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Picker("代理模式", selection: Binding(get: { settings.routeMode },
@@ -52,10 +61,12 @@ struct OverviewView: View {
         VStack(spacing: 0) {
             HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 8) {
-                    subscriptionPicker
-                    nodePicker
-                    HStack(spacing: 12) {
-                        latencyBadge
+                    if hasGroups {
+                        groupPicker
+                        memberPicker
+                    } else {
+                        nodePicker
+                        HStack(spacing: 12) { latencyBadge }
                     }
                 }
                 Spacer(minLength: 16)
@@ -190,40 +201,6 @@ struct OverviewView: View {
 
     private var store: SubscriptionStore { SubscriptionStore.shared }
 
-    // MARK: 当前订阅（可切换）
-
-    /// 订阅选择菜单：切换当前订阅，决定下方节点列表的范围。
-    @ViewBuilder private var subscriptionPicker: some View {
-        Menu {
-            if store.subscriptions.isEmpty {
-                Text("暂无订阅，请先到订阅页添加")
-            } else {
-                ForEach(store.subscriptions) { sub in
-                    Button {
-                        Task { await store.selectSubscription(sub.id) }
-                    } label: {
-                        if store.selectedSubscription?.id == sub.id {
-                            Label(sub.name, systemImage: "checkmark")
-                        } else {
-                            Text(sub.name)
-                        }
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "rectangle.stack").font(.system(size: 10))
-                Text(store.selectedSubscription?.name ?? "未选择订阅")
-                    .font(.system(size: 12, weight: .medium))
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
-            }
-            .foregroundStyle(.secondary)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-    }
-
     // MARK: 当前节点（可切换 —— 明显的下拉胶囊）
 
     /// 节点选择菜单：只列出「当前订阅」里的节点，选中即热切换出站。
@@ -261,7 +238,98 @@ struct OverviewView: View {
         .fixedSize()
         .help("点击切换节点")
     }
-    
+
+    // MARK: 分组式选择（先选分组 → 再选组内节点）
+
+    /// 内核生成的代理分组（订阅自带 proxy-groups）。有分组时概览改走两级选择。
+    private var groups: [ProxyGroupStore.Group] { groupStore.groups }
+    private var hasGroups: Bool { !groups.isEmpty }
+
+    /// 当前在概览里操作的分组：优先用户选过的，否则取第一个（selector 已排在前）。
+    private var activeGroup: ProxyGroupStore.Group? {
+        if !pickedGroup.isEmpty, let g = groups.first(where: { $0.name == pickedGroup }) { return g }
+        return groups.first
+    }
+
+    /// 分组选择（系统原生下拉选择框）：切换概览当前操作的分组。
+    @ViewBuilder private var groupPicker: some View {
+        Picker("分组", selection: Binding(
+            get: { activeGroup?.name ?? "" },
+            set: { pickedGroup = $0 }
+        )) {
+            ForEach(groups) { g in Text(g.name).tag(g.name) }
+        }
+        .labelsHidden()
+        .pickerStyle(.menu)
+        .frame(width: 200, alignment: .leading)   // 左对齐，与下方节点框左边对齐，不居中
+    }
+
+    /// 节点选择（独立框）：左侧菜单选节点（展开每项后带延迟），右侧延迟/测速（hover 高亮、点击测速、转圈占位）。
+    @ViewBuilder private var memberPicker: some View {
+        let group = activeGroup
+        let isSelector = group?.kind == .selector   // selector 组随时可选（离线持久化）；url-test 只读
+        let testing = group.map { groupStore.testing.contains($0.name) } ?? false
+        let nowDelay: Int? = group.map(\.now).flatMap { $0.isEmpty ? nil : resolveDelay($0) }
+        HStack(spacing: 0) {
+            Menu {
+                if let group, !group.members.isEmpty {
+                    if !isSelector { Text("自动分组：由内核按延迟选择，不可手动切换") }
+                    else if !groupStore.live { Text("内核未运行：选择会被记住，启动后生效") }
+                    ForEach(group.members) { m in
+                        Button {
+                            if isSelector { Task { await groupStore.select(group, m.name) } }
+                        } label: {
+                            let suffix = m.delay.map { "　\($0) ms" } ?? ""   // 每个节点后显示延迟
+                            if m.name == group.now { Label("\(m.name)\(suffix)", systemImage: "checkmark") }
+                            else { Text("\(m.name)\(suffix)") }
+                        }
+                        .disabled(!isSelector)
+                    }
+                } else { Text("该分组暂无成员") }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 15)).foregroundStyle(Color.accentColor)
+                    Text(group?.now.isEmpty == false ? group!.now : "未选择节点")
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1).truncationMode(.middle).frame(maxWidth: 190, alignment: .leading)
+                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                }
+                .padding(.leading, 16).padding(.trailing, 10).padding(.vertical, 9)
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .help(isSelector ? "点击切换组内节点" : "自动分组，由内核按延迟选择")
+
+            Divider().frame(height: 26)
+
+            DelayPill(delay: nowDelay, testing: testing, enabled: groupStore.live,
+                      color: groupLatencyColor(nowDelay)) {
+                if let group { Task { await groupStore.testGroup(group) } }
+            }
+        }
+        .fixedSize()   // 按内容收缩，永不超出父容器
+        .background(Color.accentColor.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func groupLatencyColor(_ ms: Int?) -> Color {
+        guard let ms else { return .secondary }
+        return ms < 200 ? .green : (ms < 500 ? .orange : .red)
+    }
+
+    /// 解析某成员的有效延迟：成员本身是分组就递归跟到它的当前选择，直到落在真实节点取其延迟。
+    private func resolveDelay(_ name: String, depth: Int = 0) -> Int? {
+        guard depth < 6 else { return nil }
+        if let g = groups.first(where: { $0.name == name }) {
+            return g.now.isEmpty ? nil : resolveDelay(g.now, depth: depth + 1)
+        }
+        for grp in groups {
+            if let m = grp.members.first(where: { $0.name == name }) { return m.delay }
+        }
+        return nil
+    }
+
     private var latencyBadge: some View {
         Button {
             if let node = store.selectedNode {
@@ -349,6 +417,38 @@ struct OverviewView: View {
         }
     }
 
+}
+
+/// 选择框内的延迟/测速一体按钮：显示「—」或「X ms」，hover 高亮，点击测速；测速中转圈占位。
+private struct DelayPill: View {
+    let delay: Int?
+    let testing: Bool
+    let enabled: Bool
+    let color: Color
+    var onTest: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: onTest) {
+            ZStack {
+                // 文本与转圈叠放、宽度固定：切换时不改变布局，杜绝闪动
+                Text(delay.map { "\($0) ms" } ?? "—")
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(color)
+                    .opacity(testing ? 0 : 1)
+                if testing { Spinner(size: 13) }
+            }
+            .frame(width: 64)
+            .padding(.vertical, 9)
+            .frame(maxHeight: .infinity)
+            .background(hover && enabled && !testing ? Color.accentColor.opacity(0.18) : .clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(testing || !enabled)
+        .onHover { hover = $0 }
+        .help(enabled ? "点击测速当前节点" : "内核未运行，无法测速")
+    }
 }
 
 /// 把字节速率拆成数值与单位，便于大小字号分排。
