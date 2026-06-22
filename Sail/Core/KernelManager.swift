@@ -287,13 +287,16 @@ final class KernelManager {
     }
 }
 
-enum KernelError: Error, CustomStringConvertible {
+enum KernelError: Error, CustomStringConvertible, LocalizedError {
     case message(String)
     var description: String {
         switch self {
         case .message(let m): m
         }
     }
+    // 必须实现 LocalizedError：否则 error.localizedDescription 走 NSError 桥接，
+    // 只显示「Sail.KernelError 错误 0」而丢掉真正的消息（启动失败时看不到原因）。
+    var errorDescription: String? { description }
 }
 
 /// 基于 URLSession 下载委托的下载器，按字节比例回调进度

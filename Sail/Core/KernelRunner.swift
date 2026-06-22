@@ -100,7 +100,11 @@ final class KernelRunner {
                 // helper 模式：配置交给 root helper 起 sing-box（TUN 需要 root，本进程不持有内核进程）
                 let data = try JSONSerialization.data(withJSONObject: makeConfig())
                 let (ok, err) = await SailHelperClient.startKernel(config: String(decoding: data, as: UTF8.self))
-                guard ok else { throw KernelError.message(err ?? "helper 启动失败") }
+                guard ok else {
+                    let reason = err ?? "helper 启动失败"
+                    appendLogs(["[TUN] helper 启动内核失败：\(reason)"])
+                    throw KernelError.message("TUN 启动失败：\(reason)")
+                }
                 ranViaHelper = true
                 process = nil
                 startedAt = Date()
