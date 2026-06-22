@@ -12,6 +12,11 @@ struct SailApp: App {
             ContentView()
                 .frame(minWidth: 1000, minHeight: 700)
         }
+        // 必须显式 contentMinSize：Window 默认尺寸会持续跟随内容理想尺寸自适应，而
+        // NavigationSplitView 的理想尺寸算不稳 → 窗口尺寸反馈死循环、主线程布局打满 CPU。
+        // contentMinSize 让窗口仅以内容最小尺寸为下限、其余由用户/默认尺寸决定，断开该循环。
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 1100, height: 760)
     }
 }
 
