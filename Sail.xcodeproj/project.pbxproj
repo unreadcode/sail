@@ -147,7 +147,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}/Contents/Helpers\"\nmkdir -p \"$DEST\"\nxcrun swiftc -O -target arm64-apple-macos${MACOSX_DEPLOYMENT_TARGET} \"${SRCROOT}/Helper/main.swift\" -o \"$DEST/sail-helper\"\ncodesign --force --sign - \"$DEST/sail-helper\"\n";
+			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}/Contents/Helpers\"\nmkdir -p \"$DEST\"\n# 部署目标硬编码 14.0（env + -target 双保险）：跟构建机 OS 走会链到 26-only 的\n# libswift_DarwinFoundation3.dylib，低于 26 的机器加载即崩、TUN 起不来。\nenv MACOSX_DEPLOYMENT_TARGET=14.0 xcrun swiftc -O -target arm64-apple-macos14.0 \"${SRCROOT}/Helper/main.swift\" -o \"$DEST/sail-helper\"\ncodesign --force --sign - \"$DEST/sail-helper\"\n# 构建期自检：产物若仍链接 macOS 26 专属库，直接让构建失败，绝不发出会在旧系统崩的包。\nif otool -L \"$DEST/sail-helper\" | grep -qi DarwinFoundation3; then echo \"FATAL: sail-helper 链接了 macOS 26 专属库 libswift_DarwinFoundation3.dylib，旧系统会崩，构建中止\"; exit 1; fi\nMINOS=$(otool -l \"$DEST/sail-helper\" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')\necho \"sail-helper minos=$MINOS（应为 14.0）\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -304,7 +304,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.1.5;
+				MARKETING_VERSION = 1.1.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.unreadcode.Sail;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -340,7 +340,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 1.1.5;
+				MARKETING_VERSION = 1.1.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.unreadcode.Sail;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
