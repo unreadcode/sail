@@ -5,15 +5,15 @@
 //  - 每个连接再用 getpeereid 复核调用方 uid；
 //  - 只运行 root-only 路径下、且属主为 root 的 sing-box；配置由 helper 写到 root-only 路径（不读用户可写的）。
 import Foundation
+import os
 
-let kHelperVersion = "3"   // helper 自身版本：改 helper 行为时 +1，app 据此判旧并自动重装
+let kHelperVersion = "4"   // helper 自身版本：改 helper 行为时 +1，app 据此判旧并自动重装
 let kSocketPath = "/var/run/com.unreadcode.Sail.helper.sock"
 let kSupportDir = "/Library/Application Support/Sail"
 let kSingBoxPath = kSupportDir + "/sing-box"      // root 所有的可信副本
 let kConfigPath  = kSupportDir + "/config.run.json"
 let kLogPath     = kSupportDir + "/kernel.log"    // 内核输出（0644，app 端 tail 读）
-let kLogMaxBytes: Int64 = 5 << 20                 // 日志超过 5MB 即裁剪
-let kLogKeepBytes: UInt64 = 1 << 20               // 裁剪后保留尾部 1MB
+let kLogMaxBytes: Int64 = 5 << 20                 // 单文件超过 5MB 即轮转（rename 到 .1，重开新文件）
 
 // 允许的调用方 uid，由 plist 的 --uid 传入
 var allowedUID: uid_t = {
@@ -22,8 +22,13 @@ var allowedUID: uid_t = {
     return 0
 }()
 
-var childPID: pid_t = 0   // 当前 sing-box 子进程
-let kernelLock = NSLock()  // 串行化对 childPID 的读写（accept 线程 与 看门狗线程 共用）
+// 当前 sing-box 子进程 pid，用极短临界区的 unfair lock 保护：只在读/写的一瞬持锁，
+// 绝不在 SIGTERM 等待等阻塞操作期间持锁 → 看门狗线程永不被命令执行(start/stop)阻塞。
+let pidLock = OSAllocatedUnfairLock(initialState: pid_t(0))
+func loadPID() -> pid_t { pidLock.withLock { $0 } }
+func storePID(_ p: pid_t) { pidLock.withLock { $0 = p } }
+/// 仅当当前值仍是 expected 时清零（避免把刚启动的新内核 pid 误清）。
+func clearPID(ifEqual expected: pid_t) { pidLock.withLock { if $0 == expected { $0 = 0 } } }
 
 func elog(_ s: String) { FileHandle.standardError.write(Data(("sail-helper: " + s + "\n").utf8)) }
 
@@ -47,36 +52,64 @@ func isOwnerAlive() -> Bool {
     return false
 }
 
-/// 日志封顶：超过上限只保留尾部，原地 truncate + 回写（不换 inode，内核 O_APPEND 继续写新末尾）。
-func trimLogIfNeeded() {
-    var st = stat()
-    guard stat(kLogPath, &st) == 0, st.st_size > kLogMaxBytes else { return }
-    guard let rh = FileHandle(forReadingAtPath: kLogPath) else { return }
-    try? rh.seek(toOffset: UInt64(st.st_size) - kLogKeepBytes)
-    let tail = (try? rh.readToEnd()) ?? Data()
-    try? rh.close()
-    guard let wh = FileHandle(forWritingAtPath: kLogPath) else { return }
-    try? wh.truncate(atOffset: 0)
-    try? wh.write(contentsOf: tail)
-    try? wh.close()
+/// 内核日志唯一写入者。sing-box 的 stdout/stderr 经管道汇到这里、由 helper 独占写入 kernel.log，
+/// 因此轮转可安全地「rename + 重开自己的 fd」——不存在原来「两个写入者竞争截断」的 race。
+final class LogWriter {
+    static let shared = LogWriter()
+    private struct State { var fd: Int32 = -1; var written: Int64 = 0 }
+    private let lock = OSAllocatedUnfairLock(initialState: State())
+
+    private func reopen(_ s: inout State, truncate: Bool) {
+        if s.fd >= 0 { close(s.fd); s.fd = -1 }
+        let flags = O_WRONLY | O_CREAT | O_APPEND | (truncate ? O_TRUNC : 0)
+        let fd = open(kLogPath, flags, 0o644)
+        guard fd >= 0 else { return }
+        chmod(kLogPath, 0o644)   // app（安装者）需可读
+        s.fd = fd
+        var st = stat()
+        s.written = truncate ? 0 : (stat(kLogPath, &st) == 0 ? st.st_size : 0)
+    }
+
+    /// 内核启动时调用：开一份全新（截断）日志。
+    func reset() { lock.withLock { reopen(&$0, truncate: true) } }
+
+    /// 追加一段内核输出；超过上限就轮转（rename 到 .1，重开新文件）。全程持锁串行，多个排空线程并存也安全。
+    func append(_ bytes: [UInt8]) {
+        guard !bytes.isEmpty else { return }
+        lock.withLock { s in
+            if s.fd < 0 { reopen(&s, truncate: false) }
+            guard s.fd >= 0 else { return }
+            bytes.withUnsafeBytes { _ = write(s.fd, $0.baseAddress, $0.count) }
+            s.written += Int64(bytes.count)
+            if s.written > kLogMaxBytes {
+                close(s.fd); s.fd = -1
+                rename(kLogPath, kLogPath + ".1")   // 覆盖旧 .1，仅留一份备份
+                reopen(&s, truncate: true)
+            }
+        }
+    }
 }
 
 // MARK: 起 / 停 sing-box（root）
 
 func reapIfExited() {
-    guard childPID > 0 else { return }
+    let pid = loadPID()
+    guard pid > 0 else { return }
     var status: Int32 = 0
-    if waitpid(childPID, &status, WNOHANG) == childPID { childPID = 0 }
+    if waitpid(pid, &status, WNOHANG) == pid { clearPID(ifEqual: pid) }
 }
 
+/// 停内核：读 pid（瞬时持锁）→ kill + 等待退出（全程不持锁）→ 清 pid（瞬时持锁）。
+/// 阻塞的等待循环不在锁内，故不会卡住看门狗或其它命令。
 func stopSingBox() {
-    guard childPID > 0 else { return }
-    kill(childPID, SIGTERM)
+    let pid = loadPID()
+    guard pid > 0 else { return }
+    kill(pid, SIGTERM)
     var status: Int32 = 0
-    for _ in 0..<30 { if waitpid(childPID, &status, WNOHANG) == childPID { childPID = 0; return }; usleep(100_000) }
-    kill(childPID, SIGKILL)
-    waitpid(childPID, &status, 0)
-    childPID = 0
+    var exited = false
+    for _ in 0..<30 { if waitpid(pid, &status, WNOHANG) == pid { exited = true; break }; usleep(100_000) }
+    if !exited { kill(pid, SIGKILL); waitpid(pid, &status, 0) }
+    clearPID(ifEqual: pid)
 }
 
 func startSingBox(_ configJSON: String) -> (Bool, String) {
@@ -93,14 +126,19 @@ func startSingBox(_ configJSON: String) -> (Bool, String) {
 
     stopSingBox()
 
-    // 预建日志文件并设为用户可读，把内核 stdout/stderr 重定向进去（app 端 tail 显示）
-    let lfd = open(kLogPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
-    if lfd >= 0 { close(lfd) }
-    chmod(kLogPath, 0o644)
+    // 内核 stdout/stderr 接管道，由 helper 独占写日志（避免「内核 + helper 同时写一个文件」的截断 race）。
+    var fds: [Int32] = [0, 0]
+    guard pipe(&fds) == 0 else { return (false, "建管道失败") }
+    let readFD = fds[0], writeFD = fds[1]
+
+    LogWriter.shared.reset()   // 每次启动开一份全新日志
+
     var fa: posix_spawn_file_actions_t?
     posix_spawn_file_actions_init(&fa)
-    posix_spawn_file_actions_addopen(&fa, 1, kLogPath, O_WRONLY | O_APPEND, 0)
-    posix_spawn_file_actions_adddup2(&fa, 1, 2)   // stderr 并入同一文件
+    posix_spawn_file_actions_adddup2(&fa, writeFD, 1)   // stdout → 管道写端
+    posix_spawn_file_actions_adddup2(&fa, writeFD, 2)   // stderr → 同一管道
+    posix_spawn_file_actions_addclose(&fa, readFD)      // 子进程不读管道
+    posix_spawn_file_actions_addclose(&fa, writeFD)     // 原始写端已 dup 到 1/2，关掉
     defer { posix_spawn_file_actions_destroy(&fa) }
 
     var pid: pid_t = 0
@@ -108,8 +146,20 @@ func startSingBox(_ configJSON: String) -> (Bool, String) {
         [strdup(kSingBoxPath), strdup("run"), strdup("-c"), strdup(kConfigPath), nil]
     defer { for p in argv where p != nil { free(p) } }
     let rc = posix_spawn(&pid, kSingBoxPath, &fa, nil, argv, environ)
-    guard rc == 0 else { return (false, "spawn 失败(\(rc))") }
-    childPID = pid
+    close(writeFD)   // 父进程必须关掉写端，否则子进程退出后读端永远等不到 EOF
+    guard rc == 0 else { close(readFD); return (false, "spawn 失败(\(rc))") }
+    storePID(pid)
+
+    // 排空线程：读管道 → 写日志。子进程关闭写端(退出) → read 返回 0(EOF) → 线程结束。
+    Thread.detachNewThread {
+        var buf = [UInt8](repeating: 0, count: 16384)
+        while true {
+            let n = read(readFD, &buf, buf.count)
+            if n <= 0 { break }
+            LogWriter.shared.append(Array(buf[0..<n]))
+        }
+        close(readFD)
+    }
     return (true, "")
 }
 
@@ -125,10 +175,10 @@ func handle(_ line: String) -> String {
     case "version":
         return "{\"ok\":true,\"version\":\"\(kHelperVersion)\"}\n"
     case "status":
-        kernelLock.lock(); reapIfExited(); let running = childPID > 0; kernelLock.unlock()
+        reapIfExited(); let running = loadPID() > 0
         return "{\"ok\":true,\"running\":\(running)}\n"
     case "stop":
-        kernelLock.lock(); stopSingBox(); kernelLock.unlock()
+        stopSingBox()
         return "{\"ok\":true}\n"
     case "start":
         let cfg = obj["config"] as? String ?? ""
@@ -138,7 +188,7 @@ func handle(_ line: String) -> String {
               (try? JSONSerialization.jsonObject(with: d)) is [String: Any] else {
             return "{\"ok\":false,\"error\":\"invalid config json\"}\n"
         }
-        kernelLock.lock(); let (ok, err) = startSingBox(cfg); kernelLock.unlock()
+        let (ok, err) = startSingBox(cfg)
         return ok ? "{\"ok\":true}\n" : "{\"ok\":false,\"error\":\"\(err)\"}\n"
     default:
         return "{\"ok\":false,\"error\":\"unknown cmd\"}\n"
@@ -171,16 +221,16 @@ chmod(kSocketPath, 0o600)
 guard listen(listenFD, 8) == 0 else { elog("listen() 失败"); exit(1) }
 elog("就绪，allowedUID=\(allowedUID)")
 
-// 后台线程：看门狗（属主 Sail 退出/被强杀就停内核，避免 root TUN 残留占路由表 → 整机断网）
-// + 定期裁剪日志。accept 阻塞主循环，故独立线程。
+// 后台线程：看门狗——属主 Sail 退出/被强杀就停内核，避免 root TUN 残留占路由表 → 整机断网。
+// （日志轮转已由 LogWriter 在写入时处理，看门狗不再管日志。）accept 阻塞主循环，故独立线程。
 Thread.detachNewThread {
     var ownerMissing = 0   // 连续判定属主不在的次数
-    var sinceTrim = 0
     while true {
         sleep(2)
-        kernelLock.lock()
+        // 看门狗不持有任何跨阻塞操作的锁：reapIfExited/loadPID/stopSingBox 内部各自只瞬时持 pidLock，
+        // isOwnerAlive 是纯 sysctl 不持锁。故命令端的阻塞（如 stop 的 SIGTERM 等待）永不卡住看门狗。
         reapIfExited()
-        if childPID > 0 {
+        if loadPID() > 0 {
             if isOwnerAlive() {
                 ownerMissing = 0
             } else {
@@ -195,9 +245,6 @@ Thread.detachNewThread {
         } else {
             ownerMissing = 0
         }
-        kernelLock.unlock()
-        sinceTrim += 2
-        if sinceTrim >= 30 { trimLogIfNeeded(); sinceTrim = 0 }
     }
 }
 
