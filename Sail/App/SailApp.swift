@@ -6,12 +6,11 @@ struct SailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup {
+        // 单窗口 Window（非 WindowGroup）：tray 应用只该有一个窗口。
+        // WindowGroup 在被重新激活 / reopen 时会再开一个窗口 → 「两个窗口」「关一个全没」等连锁问题。
+        Window("Sail", id: "main") {
             ContentView()
-                .frame(
-                    minWidth: 1000,
-                    minHeight: 700
-                )
+                .frame(minWidth: 1000, minHeight: 700)
         }
     }
 }
@@ -280,7 +279,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     private func hideToTray() {
-        NSApp.windows.forEach { $0.orderOut(nil) }
+        // 只隐藏内容窗口：NSApp.windows 还包含状态栏那个窗口，若一并 orderOut 会把托盘图标也藏掉
+        // （「叉掉窗口后托盘也没了」的根因）。canBecomeMain 可滤出真正的内容窗口。
+        NSApp.windows.filter(\.canBecomeMain).forEach { $0.orderOut(nil) }
         NSApp.setActivationPolicy(.accessory)   // 同时隐藏 Dock 图标
         // 收托盘后把 malloc 在浏览高峰时申请、释放后仍留存的空闲页还给系统，
         // 避免 RSS 长期卡在高水位。延后一拍，等 orderOut + SwiftUI 释放离屏绘制资源后再回收。
