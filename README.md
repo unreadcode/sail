@@ -74,6 +74,10 @@ Sail silently checks for the latest GitHub release on launch. When a new version
 - Kernel: [SagerNet/sing-box](https://github.com/SagerNet/sing-box)
 - GEO rule-sets: [sing-geosite](https://github.com/SagerNet/sing-geosite) / [sing-geoip](https://github.com/SagerNet/sing-geoip)
 
+## 友情链接
+
+> [LINUX DO](https://linux.do/) —— 新的理想型社区，技术爱好者的聚集地。
+
 ## License
 
 [GPL-3.0](LICENSE) © 2026 Unreadcode
