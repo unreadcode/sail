@@ -28,6 +28,7 @@ final class KernelRunner {
 
     private var process: Process?
     private var ranViaHelper = false   // 本次内核是否由特权 helper(root) 启动（TUN 模式）
+    private var helperStaleChecked = false   // 本会话是否已做过 helper 过期检查（只做一次，免重复弹授权）
     private var lastAppliedConfig: String?   // 上次成功启动所用配置（归一化 JSON）；用于「无变化跳过重启」
     private let maxLogLines = 800
 
@@ -88,10 +89,11 @@ final class KernelRunner {
                     disableSystemProxyIfNeeded()
                     return
                 }
-            } else if !auto, await HelperManager.isStale() {
-                // 已装但是旧版（如缺内核日志重定向）→ 重装刷新（管理员授权）；
-                // 仅用户主动启动时弹授权，崩溃自动重启不打扰；失败不致命，继续用旧 helper
-                _ = await HelperManager.install()
+            } else if !auto, !helperStaleChecked {
+                // helper 过期检查每个会话只做一次（首次启动时）：避免每次切订阅/切节点的 restart
+                // 都触发 isStale→重装→弹管理员授权。仅用户主动启动时检查，崩溃自动重启不打扰。
+                helperStaleChecked = true
+                if await HelperManager.isStale() { _ = await HelperManager.install() }   // 失败不致命，继续用旧 helper
             }
         }
 
@@ -506,8 +508,11 @@ final class KernelRunner {
             members = members.filter { seen.insert($0).inserted }
             if members.isEmpty { members = allNodeTags.isEmpty ? ["direct"] : allNodeTags }
             var o: [String: Any] = ["type": type, "tag": tag, "outbounds": members]
-            if type == "urltest" {
-                o["url"] = (g["url"] as? String) ?? "https://www.gstatic.com/generate_204"
+            let override = overrides[tag].flatMap { members.contains($0) ? $0 : nil }
+            if type == "urltest", override == nil {
+                // 健康检查地址统一用 Cloudflare：订阅常写死 www.gstatic.com，但不少节点连不上它 →
+                // url-test 全部超时、选不出节点 → 走该组的流量直接断。覆盖成更普遍可达的地址。
+                o["url"] = "http://cp.cloudflare.com/generate_204"
                 if let iv = g["interval"] as? String {
                     o["interval"] = iv
                     // sing-box 要求 interval ≤ idle_timeout；按存的 interval 推算一个更大的 idle_timeout。
@@ -516,9 +521,9 @@ final class KernelRunner {
                 }
                 if let tol = g["tolerance"] as? Int { o["tolerance"] = tol }
             } else {
-                // selector：用户持久化的手动选择优先（须是合法成员），否则配置默认（首个成员）
-                if let ov = overrides[tag], members.contains(ov) { o["default"] = ov }
-                else { o["default"] = members.first }
+                // selector，或被用户手动固定的 url-test（sing-box 不支持手动切 url-test，退化成 selector）。
+                o["type"] = "selector"
+                o["default"] = override ?? members.first
             }
             outs.append(o)
         }
@@ -582,8 +587,14 @@ final class KernelRunner {
             // 订阅自带规则（已转换落盘）：用它替代内置 geosite-cn/geoip-cn 分流，去向指向真实组。
             // 私网仍先直连；用户手填规则随后注入在最前（优先级最高）。
             route["rules"] = [["action": "sniff"], ["ip_is_private": true, "outbound": "direct"]] + imported.rules
-            // 远程 rule_set 的 download_detour 在转换时写死成 "proxy"，组模式下没有该出站 → 改指真实兜底出站。
             route["rule_set"] = imported.ruleSet.map { set -> [String: Any] in
+                // 本地已有该 geo 的 .srs（geoip-cn/geosite-cn/ads 等）→ 改用 local，避免启动时经
+                // 尚未就绪的代理远程下载 → rule-set init 超时让 sing-box FATAL、内核起不来（典型 bootstrap 死锁）。
+                if (set["type"] as? String) == "remote", let tag = set["tag"] as? String,
+                   let local = GeoData.localRuleSet(tag) {
+                    return ["type": "local", "tag": tag, "format": "binary", "path": local.path]
+                }
+                // 其余远程：转换时写死的 "proxy" download_detour 组模式下无该出站 → 改指真实兜底出站。
                 guard (set["download_detour"] as? String) == "proxy" else { return set }
                 var s = set; s["download_detour"] = proxyTag; return s
             }

@@ -89,7 +89,7 @@ enum ClashRuleImport {
                 "useAll": !((g["use"] as? [Any])?.isEmpty ?? true),    // use 任意 provider → 全部订阅节点
             ]
             if gd["type"] as? String == "urltest" {
-                gd["url"] = (g["url"] as? String) ?? "https://www.gstatic.com/generate_204"
+                gd["url"] = "http://cp.cloudflare.com/generate_204"   // 统一用更普遍可达的地址（运行时 groupOutbounds 也会覆盖）
                 let iv = (g["interval"] as? Int) ?? (Int((g["interval"] as? String) ?? "") ?? 300)
                 gd["interval"] = "\(iv)s"
                 if let tol = g["tolerance"] as? Int { gd["tolerance"] = tol }

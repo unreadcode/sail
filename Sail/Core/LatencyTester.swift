@@ -20,7 +20,8 @@ final class LatencyTester {
     private(set) var results: [String: Result] = [:]
     private(set) var running = false
 
-    private let testURL = "http://www.gstatic.com/generate_204"
+    // 连通性探测地址：Cloudflare 比 gstatic 更普遍可达（不少节点连不上 www.gstatic.com → 测速全超时）
+    private let testURL = "http://cp.cloudflare.com/generate_204"
 
     private init() {}
 
