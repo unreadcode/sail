@@ -78,3 +78,7 @@ app 启动时静默检查 GitHub 最新 release，有新版会在**托盘菜单*
 [GPL-3.0](LICENSE) © 2026 Unreadcode
 
 本项目及其衍生作品在分发时均须以 GPL-3.0 开放源码。内置的 sing-box 以独立进程调用，沿用其自身的 GPL-3.0 许可。
+
+## 友情链接
+
+> [LINUX DO](https://linux.do/) —— 新的理想型社区，技术爱好者的聚集地。
