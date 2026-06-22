@@ -336,13 +336,33 @@ private struct RuleEditSheet: View {
                 }
             }
             VStack(alignment: .leading, spacing: 6) {
-                Text("内容").font(.caption).foregroundStyle(.secondary)
-                TextField(rule.match.placeholder, text: $rule.value)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                    .focused($focused)
+                HStack {
+                    Text("内容").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if rule.match.isInline, !rule.value.trimmingCharacters(in: .whitespaces).isEmpty {
+                        Label(inlineValid ? "JSON 合法" : "JSON 语法错误",
+                              systemImage: inlineValid ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .font(.system(size: 10.5)).foregroundStyle(inlineValid ? .green : .red)
+                    }
+                }
+                if rule.match.isInline {
+                    TextEditor(text: $rule.value)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(minHeight: 96)
+                        .scrollContentBackground(.hidden)
+                        .padding(6)
+                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color(nsColor: .separatorColor).opacity(0.6)))
+                } else {
+                    TextField(rule.match.placeholder, text: $rule.value)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                        .focused($focused)
+                }
                 if let hint = rule.match.hint {
                     Text(hint).font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             VStack(alignment: .leading, spacing: 6) {
@@ -351,6 +371,9 @@ private struct RuleEditSheet: View {
                     ForEach(RuleAction.allCases) { Text($0.label).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden()
+                if rule.match.isInline {
+                    Text("若 JSON 已自带 outbound / action，此处选择将被忽略。").font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
             }
 
             HStack {
@@ -361,12 +384,18 @@ private struct RuleEditSheet: View {
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(rule.value.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(rule.value.trimmingCharacters(in: .whitespaces).isEmpty || (rule.match.isInline && !inlineValid))
             }
         }
         .padding(22)
-        .frame(width: 420)
+        .frame(width: 440)
         .onAppear { DispatchQueue.main.async { focused = false } }
+    }
+
+    /// INLINE 内容是否为合法 JSON 对象。
+    private var inlineValid: Bool {
+        guard let d = rule.value.data(using: .utf8) else { return false }
+        return (try? JSONSerialization.jsonObject(with: d)) is [String: Any]
     }
 
     private func matchChip(_ m: RuleMatch) -> some View {

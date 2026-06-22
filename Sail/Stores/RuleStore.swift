@@ -6,6 +6,7 @@ enum RuleMatch: String, Codable, CaseIterable, Identifiable {
     case domainSuffix, domainKeyword, domain, ipCIDR, geosite, geoip
     case processName, port, proto
     case ruleSetURL
+    case inline
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -19,6 +20,7 @@ enum RuleMatch: String, Codable, CaseIterable, Identifiable {
         case .port: "端口"
         case .proto: "协议"
         case .ruleSetURL: "规则集 URL"
+        case .inline: "INLINE 复合"
         }
     }
     var singBoxKey: String {
@@ -31,6 +33,7 @@ enum RuleMatch: String, Codable, CaseIterable, Identifiable {
         case .processName: "process_name"
         case .port: "port"
         case .proto: "protocol"
+        case .inline: ""   // 不走通用 key，整段 JSON 即规则
         }
     }
     var placeholder: String {
@@ -45,6 +48,7 @@ enum RuleMatch: String, Codable, CaseIterable, Identifiable {
         case .port: "443 / 80,443 / 6881-6889"
         case .proto: "tls / http / quic / bittorrent / dns"
         case .ruleSetURL: "https://example.com/rules/ads.srs"
+        case .inline: #"{"domain_suffix":["ads.com"],"port":[80,443]}"#
         }
     }
     /// 多个值的输入说明（逗号分隔）。
@@ -54,9 +58,12 @@ enum RuleMatch: String, Codable, CaseIterable, Identifiable {
         case .port: "目标端口；单个、逗号分隔多个，或 起-止 区间（如 6881-6889）。"
         case .proto: "嗅探出的应用层协议，多个用逗号分隔。"
         case .ruleSetURL: "远程 rule-set 下载地址（.srs 二进制 / .json 源格式），自动下载并参与分流。下载经当前代理。"
+        case .inline: #"直接写一段 sing-box route 规则 JSON（匹配条件）。支持多条件并列与 logical 复合，如 {"type":"logical","mode":"and","rules":[…]}。去向用下方选择，或在 JSON 里自带 outbound/action。"#
         default: nil
         }
     }
+    /// INLINE：整段 JSON 即规则，不套通用键。
+    var isInline: Bool { self == .inline }
     var isGeo: Bool { self == .geosite || self == .geoip }
 }
 
@@ -116,7 +123,14 @@ final class RuleStore {
             let v = r.value.trimmingCharacters(in: .whitespaces)
             guard !v.isEmpty else { continue }
             var dict: [String: Any]
+            var applyAction = true   // INLINE 自带去向时不再注入下方选择的 action
             switch r.match {
+            case .inline:
+                guard let d = v.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                      !obj.isEmpty else { continue }
+                dict = obj
+                if obj["outbound"] != nil || obj["action"] != nil { applyAction = false }
             case .geosite:
                 let code = v.lowercased()
                 guard Self.isValidGeoCode(code) else { continue }
@@ -145,14 +159,16 @@ final class RuleStore {
             default:
                 dict = [r.match.singBoxKey: [v]]
             }
-            switch r.action {
-            case .proxy:
-                guard hasProxy else { continue }
-                dict["outbound"] = "proxy"
-            case .direct:
-                dict["outbound"] = "direct"
-            case .reject:
-                dict["action"] = "reject"
+            if applyAction {
+                switch r.action {
+                case .proxy:
+                    guard hasProxy else { continue }
+                    dict["outbound"] = "proxy"
+                case .direct:
+                    dict["outbound"] = "direct"
+                case .reject:
+                    dict["action"] = "reject"
+                }
             }
             out.append(dict)
         }
