@@ -413,26 +413,106 @@ final class KernelRunner {
     /// 生成运行配置：mixed 入站 + 出站 + 按模式路由。
     /// 规则：国内/私网直连、其余走代理；全局：全部走代理；直连：全部直连。
     /// 未选节点时一律直连。
+    /// 把订阅节点转成 sing-box 出站（tag 唯一化）；返回出站数组 + 「原始节点名 → 唯一 tag」映射（组按名引用）。
+    nonisolated static func nodeOutbounds(_ nodes: [ProxyNode]) -> (outbounds: [[String: Any]], nameToTag: [String: String]) {
+        var outs: [[String: Any]] = []
+        var nameToTag: [String: String] = [:]
+        var used = Set<String>()
+        for node in nodes {
+            guard let data = node.outboundJSON.data(using: .utf8),
+                  var ob = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let base = node.label.isEmpty ? "node" : node.label
+            var tag = base, i = 2
+            while used.contains(tag) { tag = "\(base) \(i)"; i += 1 }
+            used.insert(tag)
+            ob["tag"] = tag
+            outs.append(ob)
+            if nameToTag[node.label] == nil { nameToTag[node.label] = tag }
+        }
+        return (outs, nameToTag)
+    }
+
+    /// 把订阅 proxy-group 定义转成 sing-box selector / url-test 出站。成员名解析为节点 tag / 嵌套组 / direct；
+    /// useAll 展开为全部节点；空组兜底为全部节点(或 direct)。
+    nonisolated static func groupOutbounds(_ groups: [[String: Any]], allNodeTags: [String], nameToTag: [String: String]) -> [[String: Any]] {
+        let groupTags = Set(groups.compactMap { $0["tag"] as? String })
+        var outs: [[String: Any]] = []
+        for g in groups {
+            guard let tag = g["tag"] as? String, let type = g["type"] as? String else { continue }
+            var members: [String] = []
+            if (g["useAll"] as? Bool) == true { members += allNodeTags }
+            for name in (g["members"] as? [String] ?? []) {
+                if name == "DIRECT" { members.append("direct") }
+                else if name == "REJECT" || name == "REJECT-DROP" || name == "PASS" { continue }
+                else if groupTags.contains(name) { members.append(name) }      // 嵌套组
+                else if let t = nameToTag[name] { members.append(t) }          // 节点名
+            }
+            // 去重保序
+            var seen = Set<String>()
+            members = members.filter { seen.insert($0).inserted }
+            if members.isEmpty { members = allNodeTags.isEmpty ? ["direct"] : allNodeTags }
+            var o: [String: Any] = ["type": type, "tag": tag, "outbounds": members]
+            if type == "urltest" {
+                o["url"] = (g["url"] as? String) ?? "https://www.gstatic.com/generate_204"
+                if let iv = g["interval"] as? String {
+                    o["interval"] = iv
+                    // sing-box 要求 interval ≤ idle_timeout；按存的 interval 推算一个更大的 idle_timeout。
+                    let n = Int(iv.dropLast()) ?? 300   // "Ns" → N
+                    o["idle_timeout"] = "\(n + 1800)s"
+                }
+                if let tol = g["tolerance"] as? Int { o["tolerance"] = tol }
+            } else {
+                o["default"] = members.first
+            }
+            outs.append(o)
+        }
+        return outs
+    }
+
     private func makeConfig(applyMixin: Bool = true) -> [String: Any] {
         let settings = SettingsStore.shared
         let listen = settings.allowLan ? "0.0.0.0" : "127.0.0.1"
 
-        // 出站
-        var proxyOutbound: [String: Any]?
-        if let node = SubscriptionStore.shared.selectedNode,
-           let data = node.outboundJSON.data(using: .utf8),
-           var outbound = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            outbound["tag"] = "proxy"
-            proxyOutbound = outbound
-        }
-        var outbounds: [[String: Any]] = []
-        if let proxyOutbound { outbounds.append(proxyOutbound) }
-        outbounds.append(["type": "direct", "tag": "direct"])
-
-        // 路由
-        let hasProxy = proxyOutbound != nil
         let mode = settings.routeMode
         let isTun = settings.tunEnabled
+
+        // 订阅出站分组模式：规则模式 + 开启导入 + 选中订阅有已转换的分组与节点
+        let importedRoute: (rules: [[String: Any]], ruleSet: [[String: Any]], final: String?, groups: [[String: Any]])? = {
+            guard settings.importSubscriptionRules, mode == .rule,
+                  let sub = SubscriptionStore.shared.selectedSubscription, !sub.nodes.isEmpty,
+                  let r = ClashRuleImport.importedRoute(dir: SubscriptionStore.subrulesDir(sub.id)),
+                  !r.groups.isEmpty else { return nil }
+            return r
+        }()
+
+        // 出站
+        var outbounds: [[String: Any]] = []
+        let hasProxy: Bool
+        let proxyTag: String   // 路由 / DNS 里「走代理」指向的出站 tag（普通模式 = proxy，组模式 = 兜底组）
+        if let imp = importedRoute, let sub = SubscriptionStore.shared.selectedSubscription {
+            // 组模式：订阅每个节点 → 独立出站；每个 proxy-group → selector / url-test 出站
+            let (nodeOuts, nameToTag) = Self.nodeOutbounds(sub.nodes)
+            let nodeTags = nodeOuts.compactMap { $0["tag"] as? String }
+            outbounds += nodeOuts
+            outbounds += Self.groupOutbounds(imp.groups, allNodeTags: nodeTags, nameToTag: nameToTag)
+            outbounds.append(["type": "direct", "tag": "direct"])
+            hasProxy = true
+            proxyTag = imp.final ?? (imp.groups.first?["tag"] as? String) ?? "direct"
+        } else {
+            var proxyOutbound: [String: Any]?
+            if let node = SubscriptionStore.shared.selectedNode,
+               let data = node.outboundJSON.data(using: .utf8),
+               var outbound = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                outbound["tag"] = "proxy"
+                proxyOutbound = outbound
+            }
+            if let proxyOutbound { outbounds.append(proxyOutbound) }
+            outbounds.append(["type": "direct", "tag": "direct"])
+            hasProxy = proxyOutbound != nil
+            proxyTag = "proxy"
+        }
+
+        // 路由
         var route: [String: Any] = ["auto_detect_interface": isTun ? settings.tun.autoDetectInterface : true]
 
         if !hasProxy || mode == .direct {
@@ -440,16 +520,17 @@ final class KernelRunner {
             route["final"] = "direct"
         } else if mode == .global {
             route["rules"] = [["action": "sniff"]]
-            route["final"] = "proxy"
-        } else if settings.importSubscriptionRules,
-                  let subID = SubscriptionStore.shared.selectedSubscription?.id,
-                  let imported = ClashRuleImport.importedRoute(dir: SubscriptionStore.subrulesDir(subID)),
-                  !imported.rules.isEmpty {
-            // 订阅自带规则（已转换落盘）：用它替代内置 geosite-cn/geoip-cn 分流。
+            route["final"] = proxyTag
+        } else if let imported = importedRoute {
+            // 订阅自带规则（已转换落盘）：用它替代内置 geosite-cn/geoip-cn 分流，去向指向真实组。
             // 私网仍先直连；用户手填规则随后注入在最前（优先级最高）。
             route["rules"] = [["action": "sniff"], ["ip_is_private": true, "outbound": "direct"]] + imported.rules
-            route["rule_set"] = imported.ruleSet
-            route["final"] = imported.final ?? "proxy"
+            // 远程 rule_set 的 download_detour 在转换时写死成 "proxy"，组模式下没有该出站 → 改指真实兜底出站。
+            route["rule_set"] = imported.ruleSet.map { set -> [String: Any] in
+                guard (set["download_detour"] as? String) == "proxy" else { return set }
+                var s = set; s["download_detour"] = proxyTag; return s
+            }
+            route["final"] = imported.final ?? proxyTag
         } else { // 规则分流（内置）
             route["rules"] = [
                 ["action": "sniff"],
@@ -526,7 +607,7 @@ final class KernelRunner {
 
             var dnsServers: [[String: Any]] = []
             if hasProxy {
-                dnsServers.append(["tag": "remote-dns", "type": "https", "server": "1.1.1.1", "detour": "proxy"])
+                dnsServers.append(["tag": "remote-dns", "type": "https", "server": "1.1.1.1", "detour": proxyTag])
             }
             // 不写 detour：sing-box 1.12+ 的 DNS 连接默认即直连，写 detour:"direct"
             // 会被判为「detour to an empty direct outbound makes no sense」而启动失败。

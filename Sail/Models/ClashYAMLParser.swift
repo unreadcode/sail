@@ -40,6 +40,12 @@ enum ClashYAMLParser {
         }
     }
 
+    /// proxy-groups 完整定义（原始 dict：name / type / proxies / use / url / interval / tolerance）。
+    nonisolated static func proxyGroupDefs(_ yaml: String) -> [[String: Any]] {
+        guard let v = topLevelValue(named: "proxy-groups", in: yaml) as? [Any] else { return [] }
+        return v.compactMap { $0 as? [String: Any] }
+    }
+
     /// 取出 proxy-providers 中 type: http 的 url 列表（用于跟随抓取真实节点）。
     nonisolated static func providerURLs(_ yaml: String) -> [String] {
         guard let value = topLevelValue(named: "proxy-providers", in: yaml),

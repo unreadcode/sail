@@ -16,15 +16,13 @@ enum ClashRuleImport {
         let clashRules = ClashYAMLParser.rules(yaml)
         guard !clashRules.isEmpty else { return false }
         let providers = ClashYAMLParser.ruleProviders(yaml)
-        let groups = Dictionary(ClashYAMLParser.proxyGroups(yaml).map { ($0.name, $0.proxies) },
-                                uniquingKeysWith: { a, _ in a })
 
-        func resolve(_ target: String, _ visited: Set<String> = []) -> String {
+        // 去向直接指向真实组名（该组会作为 selector/url-test 出站被生成）；DIRECT→直连，REJECT→拦截(nil)。
+        func outboundFor(_ target: String) -> String? {
             let t = target.trimmingCharacters(in: .whitespaces)
             if t == "DIRECT" { return "direct" }
-            if t == "REJECT" || t == "REJECT-DROP" || t == "PASS" { return "reject" }
-            guard let proxies = groups[t], !visited.contains(t), let first = proxies.first else { return "proxy" }
-            return resolve(first, visited.union([t]))
+            if t == "REJECT" || t == "REJECT-DROP" || t == "PASS" { return nil }
+            return t
         }
 
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -39,14 +37,11 @@ enum ClashRuleImport {
 
             if type == "MATCH" || type == "FINAL" {
                 guard parts.count >= 2 else { continue }
-                let out = resolve(parts[1])
-                if out == "proxy" && !hasProxy { continue }
-                finalOutbound = out
+                finalOutbound = outboundFor(parts[1]) ?? "direct"   // 兜底走 reject 极少见，退直连
                 continue
             }
             guard parts.count >= 3 else { continue }
-            let arg = parts[1], out = resolve(parts[2])
-            if out == "proxy" && !hasProxy { continue }
+            let arg = parts[1], out = outboundFor(parts[2])
 
             switch type {
             case "RULE-SET":
@@ -82,7 +77,27 @@ enum ClashRuleImport {
             }
         }
 
-        var route: [String: Any] = ["rules": sbRules, "rule_set": ruleSetDefs]
+        // 出站分组定义（makeConfig 据此 + 订阅节点生成 selector/url-test 出站）。
+        var groups: [[String: Any]] = []
+        for g in ClashYAMLParser.proxyGroupDefs(yaml) {
+            guard let name = g["name"] as? String else { continue }
+            let ctype = (g["type"] as? String ?? "select").lowercased()
+            var gd: [String: Any] = [
+                "tag": name,
+                "type": ctype == "select" ? "selector" : "urltest",   // url-test/fallback/load-balance → urltest
+                "members": (g["proxies"] as? [Any])?.compactMap { $0 as? String } ?? [],
+                "useAll": !((g["use"] as? [Any])?.isEmpty ?? true),    // use 任意 provider → 全部订阅节点
+            ]
+            if gd["type"] as? String == "urltest" {
+                gd["url"] = (g["url"] as? String) ?? "https://www.gstatic.com/generate_204"
+                let iv = (g["interval"] as? Int) ?? (Int((g["interval"] as? String) ?? "") ?? 300)
+                gd["interval"] = "\(iv)s"
+                if let tol = g["tolerance"] as? Int { gd["tolerance"] = tol }
+            }
+            groups.append(gd)
+        }
+
+        var route: [String: Any] = ["rules": sbRules, "rule_set": ruleSetDefs, "groups": groups]
         if let f = finalOutbound { route["final"] = f }
         guard !sbRules.isEmpty || finalOutbound != nil,
               let data = try? JSONSerialization.data(withJSONObject: route) else { return false }
@@ -91,19 +106,21 @@ enum ClashRuleImport {
     }
 
     /// 读回某订阅已转换的 route 片段（makeConfig 用）。
-    nonisolated static func importedRoute(dir: URL) -> (rules: [[String: Any]], ruleSet: [[String: Any]], final: String?)? {
+    nonisolated static func importedRoute(dir: URL)
+        -> (rules: [[String: Any]], ruleSet: [[String: Any]], final: String?, groups: [[String: Any]])? {
         guard let data = try? Data(contentsOf: dir.appendingPathComponent("route.json")),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        let rules = obj["rules"] as? [[String: Any]] ?? []
-        let ruleSet = obj["rule_set"] as? [[String: Any]] ?? []
-        return (rules, ruleSet, obj["final"] as? String)
+        return (obj["rules"] as? [[String: Any]] ?? [],
+                obj["rule_set"] as? [[String: Any]] ?? [],
+                obj["final"] as? String,
+                obj["groups"] as? [[String: Any]] ?? [])
     }
 
     // MARK: 去向注入
 
-    private nonisolated static func withAction(_ rule: [String: Any], _ out: String) -> [String: Any] {
+    private nonisolated static func withAction(_ rule: [String: Any], _ outbound: String?) -> [String: Any] {
         var r = rule
-        if out == "reject" { r["action"] = "reject" } else { r["outbound"] = out }
+        if let o = outbound { r["outbound"] = o } else { r["action"] = "reject" }
         return r
     }
 
