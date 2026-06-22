@@ -66,6 +66,7 @@ struct OverviewView: View {
             ZStack(alignment: .bottomLeading) {
                 Sparkline(values: monitor.history, tint: .accentColor)
                     .frame(height: 52)
+                    .drawingGroup()   // 合成为单层，侧栏展开挤窄时不再逐帧重算贝塞尔路径
                     .opacity(connected ? 0.85 : 0.2)
                 HStack {
                     Text("累计 ↓ \(formatBytes(monitor.totalDown))")
