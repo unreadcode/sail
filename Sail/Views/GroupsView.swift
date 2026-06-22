@@ -227,6 +227,13 @@ private struct MemberChip: View {
                 .font(.system(size: 12, weight: selected ? .semibold : .regular))
                 .lineLimit(1).truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            if !member.isGroup, !member.proto.isEmpty {
+                Text(member.proto.uppercased())
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .padding(.horizontal, 4).padding(.vertical, 1.5)
+                    .background(ProtocolStyle.color(member.proto).opacity(0.16), in: Capsule())
+                    .foregroundStyle(ProtocolStyle.color(member.proto))
+            }
             if selected {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 11))

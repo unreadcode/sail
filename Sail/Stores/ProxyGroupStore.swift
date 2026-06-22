@@ -13,6 +13,7 @@ final class ProxyGroupStore {
         let name: String
         var delay: Int?        // 最近一次延迟（ms）；nil = 未知 / 超时
         let isGroup: Bool      // 成员本身是不是另一个组（嵌套）
+        var proto: String = "" // 协议类型（tuic/anytls/vless… 小写）；组成员为空
         var id: String { name }
     }
 
@@ -30,10 +31,14 @@ final class ProxyGroupStore {
     private(set) var live = false                 // true=来自运行中内核的实时数据；false=离线读订阅持久化结构
     private(set) var testing: Set<String> = []   // 正在测速的组名
 
-    /// 用户对各分组的手动选择（groupName → 成员 tag）。持久化：离线也能选，
-    /// 且作为 makeConfig 里 selector 的 default —— 内核（重）启动后即生效、跨重启不丢。
-    private(set) var overrides: [String: String] = [:]
+    /// 用户对各分组的手动选择，**按订阅分别记忆**（subID → {groupName: 成员 tag}）。
+    /// 持久化：离线也能选、跨重启不丢、切回原订阅恢复其选择，且作为 makeConfig 里 selector 的 default。
+    private var overridesBySub: [String: [String: String]] = [:]
     private static var overridesURL: URL { KernelPaths.supportDir.appendingPathComponent("group-selections.json") }
+
+    /// 当前选中订阅的分组选择（makeConfig/groupOutbounds 与各处读取用）。
+    var overrides: [String: String] { overridesBySub[subKey] ?? [:] }
+    private var subKey: String { SubscriptionStore.shared.selectedSubscriptionID?.uuidString ?? "default" }
 
     /// 原本是 url-test（自动）的组名（来自订阅 route.json）。手动固定后 clash_api 会把它报成 selector，
     /// 靠这个集合才知道它「本可自动」，从而给出「恢复自动」。按订阅缓存，订阅变了才重算。
@@ -55,19 +60,27 @@ final class ProxyGroupStore {
     private init() { loadOverrides() }
 
     private func loadOverrides() {
-        guard let data = try? Data(contentsOf: Self.overridesURL),
-              let dict = try? JSONDecoder().decode([String: String].self, from: data) else { return }
-        overrides = dict
+        guard let data = try? Data(contentsOf: Self.overridesURL) else { return }
+        if let dict = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+            overridesBySub = dict                                   // 新格式：按订阅
+        } else if let flat = try? JSONDecoder().decode([String: String].self, from: data) {
+            overridesBySub["default"] = flat                        // 旧格式迁移到 default 桶
+        }
     }
 
     private func setOverride(_ group: String, _ member: String) {
-        overrides[group] = member
+        overridesBySub[subKey, default: [:]][group] = member
+        saveOverrides()
+    }
+
+    private func clearOverride(_ group: String) {
+        overridesBySub[subKey]?[group] = nil
         saveOverrides()
     }
 
     private func saveOverrides() {
         try? FileManager.default.createDirectory(at: KernelPaths.supportDir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(overrides) {
+        if let data = try? JSONEncoder().encode(overridesBySub) {
             try? data.write(to: Self.overridesURL, options: .atomic)
         }
     }
@@ -130,21 +143,26 @@ final class ProxyGroupStore {
         }
         let (nodeOuts, nameToTag) = KernelRunner.nodeOutbounds(sub.nodes)
         let nodeTags = nodeOuts.compactMap { $0["tag"] as? String }
+        // 节点 tag → 协议类型（离线时给成员标协议）
+        var protoByTag: [String: String] = [:]
+        for o in nodeOuts {
+            if let t = o["tag"] as? String, let p = (o["type"] as? String)?.lowercased() { protoByTag[t] = p }
+        }
         let groupOuts = KernelRunner.groupOutbounds(r.groups, allNodeTags: nodeTags, nameToTag: nameToTag, overrides: overrides)
-        let parsed = Self.parsePersisted(groupOuts)
+        let parsed = Self.parsePersisted(groupOuts, protoByTag: protoByTag)
         if parsed != groups { groups = parsed }
         live = false; loaded = true
     }
 
     /// 把 groupOutbounds 产出的 selector/url-test 出站字典解析成 Group（离线：无延迟，now 取 default/首个）。
-    nonisolated private static func parsePersisted(_ groupOuts: [[String: Any]]) -> [Group] {
+    nonisolated private static func parsePersisted(_ groupOuts: [[String: Any]], protoByTag: [String: String]) -> [Group] {
         let groupTags = Set(groupOuts.compactMap { $0["tag"] as? String })
         let result: [Group] = groupOuts.compactMap { o in
             guard let tag = o["tag"] as? String, let type = (o["type"] as? String)?.lowercased() else { return nil }
             let kind: Group.Kind = (type == "selector") ? .selector : .urltest
             let memberTags = (o["outbounds"] as? [String]) ?? []
             let now = (o["default"] as? String) ?? memberTags.first ?? ""
-            let members = memberTags.map { Member(name: $0, delay: nil, isGroup: groupTags.contains($0)) }
+            let members = memberTags.map { Member(name: $0, delay: nil, isGroup: groupTags.contains($0), proto: protoByTag[$0] ?? "") }
             return Group(name: tag, kind: kind, now: now, members: members)
         }
         return result   // groupOuts 已是 route.json 里 r.groups 的定义顺序，保持不动
@@ -167,10 +185,16 @@ final class ProxyGroupStore {
                   let d = hist.last?["delay"] as? Int, d > 0 else { return nil }
             return d
         }
+        let nonProto: Set<String> = ["selector", "urltest", "fallback", "loadbalance", "direct", "block", "dns", "reject"]
         func isGroup(_ name: String) -> Bool {
             guard let p = proxies[name] as? [String: Any],
                   let t = (p["type"] as? String)?.lowercased() else { return false }
             return ["selector", "urltest", "fallback", "loadbalance"].contains(t)
+        }
+        func protoOf(_ name: String) -> String {   // 协议类型（组/特殊出站返回空）
+            guard let p = proxies[name] as? [String: Any],
+                  let t = (p["type"] as? String)?.lowercased(), !nonProto.contains(t) else { return "" }
+            return t
         }
         var result: [Group] = []
         for (name, v) in proxies {
@@ -184,7 +208,7 @@ final class ProxyGroupStore {
             default: continue
             }
             let all = (p["all"] as? [String]) ?? []
-            let members = all.map { Member(name: $0, delay: lastDelay($0), isGroup: isGroup($0)) }
+            let members = all.map { Member(name: $0, delay: lastDelay($0), isGroup: isGroup($0), proto: protoOf($0)) }
             result.append(Group(name: name, kind: kind, now: (p["now"] as? String) ?? "", members: members))
         }
         return result   // 不在此排序：顺序由 refresh 首屏定一次后固定（见 applyKeepingOrder）
@@ -222,8 +246,7 @@ final class ProxyGroupStore {
     /// 把某个被手动固定的自动组恢复为「按延迟自动选择」：清掉持久化选择并重启应用。
     func resetToAuto(_ group: Group) async {
         guard overrides[group.name] != nil else { return }
-        overrides[group.name] = nil
-        saveOverrides()
+        clearOverride(group.name)
         await KernelRunner.shared.restartIfConfigChanged()
         await refresh()
     }

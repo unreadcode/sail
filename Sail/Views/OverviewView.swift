@@ -7,6 +7,7 @@ struct OverviewView: View {
     @State private var ipInfo = IPInfo.shared
     @State private var groupStore = ProxyGroupStore.shared
     @AppStorage("overviewPickedGroup") private var pickedGroup = ""   // 概览操作的分组（空=第一个）；持久化，切页/重启不丢
+    @State private var showNodes = false                             // 节点选择 popover 是否展开
     @State private var appeared = false
     @State private var kernelVersion = "—"
 
@@ -272,29 +273,7 @@ struct OverviewView: View {
         let testing = group.map { groupStore.testing.contains($0.name) } ?? false
         let nowDelay: Int? = group.map(\.now).flatMap { $0.isEmpty ? nil : resolveDelay($0) }
         HStack(spacing: 0) {
-            Menu {
-                if let group, !group.members.isEmpty {
-                    if !groupStore.live { Text("内核未运行：选择会被记住，启动后生效") }
-                    // 自动组：提供「按延迟自动」选项（清除手动固定）
-                    if isAuto {
-                        Button { Task { await groupStore.resetToAuto(group) } } label: {
-                            if pinned { Text("⚡ 按延迟自动选择") }
-                            else { Label("⚡ 按延迟自动选择", systemImage: "checkmark") }
-                        }
-                        Divider()
-                    }
-                    ForEach(group.members) { m in
-                        Button {
-                            Task { await groupStore.select(group, m.name) }
-                        } label: {
-                            let suffix = m.delay.map { "　\($0) ms" } ?? ""   // 每个节点后显示延迟
-                            // 自动模式（未固定）时不给成员打勾，避免和「自动」选项冲突
-                            if m.name == group.now && !(isAuto && !pinned) { Label("\(m.name)\(suffix)", systemImage: "checkmark") }
-                            else { Text("\(m.name)\(suffix)") }
-                        }
-                    }
-                } else { Text("该分组暂无成员") }
-            } label: {
+            Button { if group != nil { showNodes.toggle() } } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 15)).foregroundStyle(Color.accentColor)
                     Text(group?.now.isEmpty == false ? group!.now : "未选择节点")
@@ -306,8 +285,11 @@ struct OverviewView: View {
                 .padding(.leading, 16).padding(.trailing, 10).padding(.vertical, 9)
                 .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden)
+            .buttonStyle(.plain)
             .help("点击切换组内节点")
+            .popover(isPresented: $showNodes, arrowEdge: .bottom) {
+                if let group { nodePopover(group, isAuto: isAuto, pinned: pinned) }
+            }
 
             Divider().frame(height: 26)
 
@@ -319,6 +301,34 @@ struct OverviewView: View {
         .fixedSize()   // 按内容收缩，永不超出父容器
         .background(Color.accentColor.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    /// 节点选择 popover：限高 + 可滚动，节点再多也不会撑满屏幕。
+    @ViewBuilder private func nodePopover(_ group: ProxyGroupStore.Group, isAuto: Bool, pinned: Bool) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                if !groupStore.live {
+                    Text("内核未运行：选择会被记住，启动后生效")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                }
+                if isAuto {   // 自动组：按延迟自动（清除手动固定）
+                    NodeRow(title: "⚡ 按延迟自动选择", proto: "", delay: nil, selected: !pinned) {
+                        showNodes = false; Task { await groupStore.resetToAuto(group) }
+                    }
+                    Divider().padding(.vertical, 2)
+                }
+                ForEach(group.members) { m in
+                    NodeRow(title: m.name, proto: m.isGroup ? "" : m.proto, delay: m.delay,
+                            selected: m.name == group.now && !(isAuto && !pinned)) {
+                        showNodes = false; Task { await groupStore.select(group, m.name) }
+                    }
+                }
+            }
+            .padding(6)
+        }
+        .frame(width: 300)
+        .frame(maxHeight: 360)   // 限高，超出可滚
     }
 
     private func groupLatencyColor(_ ms: Int?) -> Color {
@@ -456,6 +466,49 @@ private struct DelayPill: View {
         .disabled(testing || !enabled)
         .onHover { hover = $0 }
         .help(enabled ? "点击测速当前节点" : "内核未运行，无法测速")
+    }
+}
+
+/// 节点选择 popover 里的一行：国旗 + 名称 + 协议徽标 + 延迟，选中打勾，hover 高亮。
+private struct NodeRow: View {
+    let title: String
+    let proto: String
+    let delay: Int?
+    let selected: Bool
+    var onTap: () -> Void
+    @State private var hover = false
+
+    private var parts: (flag: String, name: String) { NodeName.split(title) }
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 7) {
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 11)).foregroundStyle(selected ? Color.accentColor : Color(nsColor: .tertiaryLabelColor))
+                if !parts.flag.isEmpty { Text(parts.flag).font(.system(size: 13)) }
+                Text(parts.name)
+                    .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                    .lineLimit(1).truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !proto.isEmpty {
+                    Text(proto.uppercased())
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .padding(.horizontal, 4).padding(.vertical, 1.5)
+                        .background(ProtocolStyle.color(proto).opacity(0.16), in: Capsule())
+                        .foregroundStyle(ProtocolStyle.color(proto))
+                }
+                if let delay {
+                    Text("\(delay)").font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(delay < 200 ? .green : (delay < 500 ? .orange : .red))
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background(hover ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
     }
 }
 
