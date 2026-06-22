@@ -21,21 +21,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     private var statusItem: NSStatusItem?
     private weak var mainWindow: NSWindow?
 
+    // 单实例文件锁：第一个实例持锁到进程退出（fd 故意不关）；进程死亡时 OS 自动释放，无残留。
+    private var instanceLockFD: Int32 = -1
+    private var didEnforceSingleInstance = false
+
     // 关掉最后一个窗口不退出——留在托盘
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     @MainActor
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // 单例守卫：已有同 bundle id 实例在跑（含不同路径的副本）→ 唤起它、让它显示窗口，本实例立即 exit。
-        // 用 exit(0) 而非 NSApp.terminate：不跑任何收尾，避免本「多余实例」误把现有实例的系统代理撤掉。
-        let me = NSRunningApplication.current
-        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
-            .filter { $0.processIdentifier != me.processIdentifier && !$0.isTerminated }
-        if let other = others.first {
-            other.activate()
-            DistributedNotificationCenter.default().postNotificationName(Self.showWindowNotification, object: nil)
-            exit(0)
-        }
+        enforceSingleInstance()   // 尽早拦截多余实例（在内核 / 系统代理任何动作之前）
 
         if SettingsStore.shared.silentStart {
             NSApp.setActivationPolicy(.prohibited)
@@ -45,8 +40,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     /// 多余实例通知现有实例显示主窗的跨进程通知名。
     static let showWindowNotification = Notification.Name("com.unreadcode.Sail.showWindow")
 
+    /// 单实例强约束：用 flock 文件锁判定，内核级、零竞态、不依赖 LaunchServices 与启动时机。
+    /// 第一个实例拿到锁并持有到退出；拿不到锁说明已有实例在跑 → 唤起它、本进程 exit(0)（不跑收尾，
+    /// 避免多余实例误撤现有实例的系统代理）。在 will/didFinishLaunching 两处调用，靠 flag 保证只执行一次。
+    @MainActor
+    private func enforceSingleInstance() {
+        guard !didEnforceSingleInstance else { return }
+        didEnforceSingleInstance = true
+
+        try? FileManager.default.createDirectory(at: KernelPaths.supportDir, withIntermediateDirectories: true)
+        let lockPath = KernelPaths.supportDir.appendingPathComponent(".instance.lock").path
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else { return }   // 连锁文件都建不了：放行，绝不冒险误杀唯一实例
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+            instanceLockFD = fd         // 本进程是唯一实例，持锁到退出（不 close）
+            return
+        }
+        close(fd)
+
+        // 已有实例持锁 → 唤起它（让它从托盘/隐藏状态显示主窗），自己退出
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .filter { $0.processIdentifier != getpid() && !$0.isTerminated }
+        others.first?.activate()
+        DistributedNotificationCenter.default().postNotificationName(
+            Self.showWindowNotification, object: nil, userInfo: nil, deliverImmediately: true)
+        exit(0)
+    }
+
     @MainActor
     func applicationDidFinishLaunching(_ notification: Notification) {
+        enforceSingleInstance()   // 兜底：万一 willFinishLaunching 没触发，这里在拉起内核前再拦一次
         setupStatusItem()
         SettingsStore.shared.applyAppearance()   // 恢复上次选择的主题外观
         // 收到「多余实例」的跨进程请求时，显示主窗（让用户从启动台再点时看到现有实例）
