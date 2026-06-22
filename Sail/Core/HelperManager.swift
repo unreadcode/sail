@@ -6,7 +6,7 @@ import Foundation
 enum HelperManager {
     static let label = "com.unreadcode.Sail.helper"
     /// 内嵌 helper 的版本，须与 Helper/main.swift 的 kHelperVersion 一致；装着的版本不符即判旧、自动重装。
-    static let expectedVersion = "2"
+    static let expectedVersion = "3"
     static let helperDest = "/Library/PrivilegedHelperTools/\(label)"
     static let plistDest = "/Library/LaunchDaemons/\(label).plist"
     static let supportDir = "/Library/Application Support/Sail"

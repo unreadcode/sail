@@ -6,7 +6,7 @@
 //  - 只运行 root-only 路径下、且属主为 root 的 sing-box；配置由 helper 写到 root-only 路径（不读用户可写的）。
 import Foundation
 
-let kHelperVersion = "2"   // helper 自身版本：改 helper 行为时 +1，app 据此判旧并自动重装
+let kHelperVersion = "3"   // helper 自身版本：改 helper 行为时 +1，app 据此判旧并自动重装
 let kSocketPath = "/var/run/com.unreadcode.Sail.helper.sock"
 let kSupportDir = "/Library/Application Support/Sail"
 let kSingBoxPath = kSupportDir + "/sing-box"      // root 所有的可信副本
@@ -23,8 +23,29 @@ var allowedUID: uid_t = {
 }()
 
 var childPID: pid_t = 0   // 当前 sing-box 子进程
+let kernelLock = NSLock()  // 串行化对 childPID 的读写（accept 线程 与 看门狗线程 共用）
 
 func elog(_ s: String) { FileHandle.standardError.write(Data(("sail-helper: " + s + "\n").utf8)) }
+
+/// 安装时记录的那个用户(allowedUID)是否仍有名为 "Sail" 的进程在跑。
+/// 查询失败一律返回 true（保守：绝不因查询出错而误停用户正在用的内核）。
+func isOwnerAlive() -> Bool {
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(bitPattern: allowedUID)]
+    var size = 0
+    guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else { return true }
+    let stride = MemoryLayout<kinfo_proc>.stride
+    var buf = [kinfo_proc](repeating: kinfo_proc(), count: size / stride + 1)
+    var got = size + stride
+    guard sysctl(&mib, 4, &buf, &got, nil, 0) == 0 else { return true }
+    for i in 0..<(got / stride) {
+        var p = buf[i].kp_proc
+        let name = withUnsafePointer(to: &p.p_comm) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MAXCOMLEN) + 1) { String(cString: $0) }
+        }
+        if name == "Sail" { return true }
+    }
+    return false
+}
 
 /// 日志封顶：超过上限只保留尾部，原地 truncate + 回写（不换 inode，内核 O_APPEND 继续写新末尾）。
 func trimLogIfNeeded() {
@@ -104,10 +125,10 @@ func handle(_ line: String) -> String {
     case "version":
         return "{\"ok\":true,\"version\":\"\(kHelperVersion)\"}\n"
     case "status":
-        reapIfExited()
-        return "{\"ok\":true,\"running\":\(childPID > 0)}\n"
+        kernelLock.lock(); reapIfExited(); let running = childPID > 0; kernelLock.unlock()
+        return "{\"ok\":true,\"running\":\(running)}\n"
     case "stop":
-        stopSingBox()
+        kernelLock.lock(); stopSingBox(); kernelLock.unlock()
         return "{\"ok\":true}\n"
     case "start":
         let cfg = obj["config"] as? String ?? ""
@@ -117,7 +138,7 @@ func handle(_ line: String) -> String {
               (try? JSONSerialization.jsonObject(with: d)) is [String: Any] else {
             return "{\"ok\":false,\"error\":\"invalid config json\"}\n"
         }
-        let (ok, err) = startSingBox(cfg)
+        kernelLock.lock(); let (ok, err) = startSingBox(cfg); kernelLock.unlock()
         return ok ? "{\"ok\":true}\n" : "{\"ok\":false,\"error\":\"\(err)\"}\n"
     default:
         return "{\"ok\":false,\"error\":\"unknown cmd\"}\n"
@@ -150,8 +171,35 @@ chmod(kSocketPath, 0o600)
 guard listen(listenFD, 8) == 0 else { elog("listen() 失败"); exit(1) }
 elog("就绪，allowedUID=\(allowedUID)")
 
-// 后台定期裁剪日志，防长时间运行写爆磁盘（accept 阻塞主循环，故用独立线程）
-Thread.detachNewThread { while true { sleep(30); trimLogIfNeeded() } }
+// 后台线程：看门狗（属主 Sail 退出/被强杀就停内核，避免 root TUN 残留占路由表 → 整机断网）
+// + 定期裁剪日志。accept 阻塞主循环，故独立线程。
+Thread.detachNewThread {
+    var ownerMissing = 0   // 连续判定属主不在的次数
+    var sinceTrim = 0
+    while true {
+        sleep(2)
+        kernelLock.lock()
+        reapIfExited()
+        if childPID > 0 {
+            if isOwnerAlive() {
+                ownerMissing = 0
+            } else {
+                ownerMissing += 1
+                // ~6s 宽限：避开 Sail「退出→立刻重开」的瞬断，避免误停
+                if ownerMissing >= 3 {
+                    elog("属主 Sail 已退出，停止内核（撤 TUN）")
+                    stopSingBox()
+                    ownerMissing = 0
+                }
+            }
+        } else {
+            ownerMissing = 0
+        }
+        kernelLock.unlock()
+        sinceTrim += 2
+        if sinceTrim >= 30 { trimLogIfNeeded(); sinceTrim = 0 }
+    }
+}
 
 while true {
     let conn = accept(listenFD, nil, nil)
