@@ -147,7 +147,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}/Contents/Helpers\"\nmkdir -p \"$DEST\"\nxcrun swiftc -O \"${SRCROOT}/Helper/main.swift\" -o \"$DEST/sail-helper\"\ncodesign --force --sign - \"$DEST/sail-helper\"\n";
+			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}/Contents/Helpers\"\nmkdir -p \"$DEST\"\nxcrun swiftc -O -target arm64-apple-macos${MACOSX_DEPLOYMENT_TARGET} \"${SRCROOT}/Helper/main.swift\" -o \"$DEST/sail-helper\"\ncodesign --force --sign - \"$DEST/sail-helper\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
