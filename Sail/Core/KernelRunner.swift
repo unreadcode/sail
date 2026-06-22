@@ -413,7 +413,7 @@ final class KernelRunner {
     /// 生成运行配置：mixed 入站 + 出站 + 按模式路由。
     /// 规则：国内/私网直连、其余走代理；全局：全部走代理；直连：全部直连。
     /// 未选节点时一律直连。
-    private func makeConfig() -> [String: Any] {
+    private func makeConfig(applyMixin: Bool = true) -> [String: Any] {
         let settings = SettingsStore.shared
         let listen = settings.allowLan ? "0.0.0.0" : "127.0.0.1"
 
@@ -558,6 +558,35 @@ final class KernelRunner {
 
         config["route"] = route
 
-        return config
+        // 最后一步：用户 Mixin 深合并覆盖（启用时）。放在最后，可覆盖以上任意生成字段。
+        return applyMixin ? MixinStore.shared.apply(to: config) : config
+    }
+
+    /// 用「给定 Mixin 文本」合并后的配置跑一次 `sing-box check`；nil=通过，否则返回错误信息。
+    /// 不依赖 enabled、不改运行状态——便于启用前先验，避免改坏配置后重启内核才发现起不来。
+    func validateConfig(mixinText: String) async -> String? {
+        var cfg = makeConfig(applyMixin: false)
+        if let overlay = MixinStore.parseObject(mixinText) {
+            cfg = MixinStore.deepMerge(cfg, overlay, overlayWins: MixinStore.shared.priority == .mixinWins)
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: cfg, options: [.prettyPrinted]) else {
+            return "生成配置失败"
+        }
+        guard FileManager.default.fileExists(atPath: KernelPaths.binary.path) else { return "未安装内核，无法校验" }
+        return await Task.detached {
+            let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("sail-check-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            guard (try? data.write(to: tmp)) != nil else { return "写临时配置失败" }
+            let p = Process()
+            p.executableURL = KernelPaths.binary
+            p.arguments = ["check", "-c", tmp.path]
+            let errPipe = Pipe(); p.standardError = errPipe; p.standardOutput = Pipe()
+            do { try p.run() } catch { return "无法运行内核校验" }
+            p.waitUntilExit()
+            if p.terminationStatus == 0 { return nil }
+            let msg = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let trimmed = msg.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? "配置校验失败（code \(p.terminationStatus)）" : trimmed
+        }.value
     }
 }

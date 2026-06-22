@@ -20,6 +20,10 @@ struct SettingsView: View {
                     AdvancedCard()
                 }
                 VStack(alignment: .leading, spacing: 16) {
+                    SectionHeader("Mixin 配置覆盖")
+                    MixinCard()
+                }
+                VStack(alignment: .leading, spacing: 16) {
                     SectionHeader("内核")
                     KernelCard()
                 }
@@ -418,6 +422,92 @@ private struct AdvancedCard: View {
     private func commitInterval() {
         store.setLatencyInterval(Int(intervalText) ?? 300)
         intervalText = String(store.latencyIntervalSec)
+    }
+}
+
+// MARK: - Mixin 配置覆盖
+
+private struct MixinCard: View {
+    @State private var store = MixinStore.shared
+    @State private var draft = ""
+    @State private var checking = false
+    @State private var checkResult: (ok: Bool, msg: String)?
+
+    private var draftEmpty: Bool { draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var draftValid: Bool { draftEmpty || MixinStore.parseObject(draft) != nil }
+
+    var body: some View {
+        Card(padding: 0) {
+            VStack(spacing: 0) {
+                settingRow("启用 Mixin", "把下面的 JSON 深合并进生成的 sing-box 配置，可覆盖 / 补充任意字段（DNS、experimental 等）") {
+                    Toggle("", isOn: Binding(get: { store.enabled }, set: { store.setEnabled($0) }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+                Divider().padding(.leading, 16)
+                settingRow("冲突优先级", "同一字段两边都有时谁优先；嵌套对象始终递归合并，数组整体替换") {
+                    Picker("", selection: Binding(get: { store.priority }, set: { store.setPriority($0) })) {
+                        ForEach(MixinStore.Priority.allCases) { Text($0.label).tag($0) }
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    .disabled(!store.enabled)
+                }
+                Divider().padding(.leading, 16)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Mixin JSON").font(.system(size: 13, weight: .medium))
+                        Spacer()
+                        if draftEmpty {
+                            Text("空（无覆盖）").font(.caption).foregroundStyle(.secondary)
+                        } else if draftValid {
+                            Label("JSON 合法", systemImage: "checkmark.circle.fill")
+                                .font(.caption).foregroundStyle(.green)
+                        } else {
+                            Label("JSON 语法错误", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption).foregroundStyle(.red)
+                        }
+                    }
+                    TextEditor(text: $draft)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(minHeight: 150)
+                        .scrollContentBackground(.hidden)
+                        .padding(6)
+                        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color(nsColor: .separatorColor).opacity(0.6)))
+                        .onChange(of: draft) { _, n in store.setText(n); checkResult = nil }
+                    Text(#"例：{"dns":{"strategy":"prefer_ipv4"},"experimental":{"cache_file":{"enabled":true}}}"#)
+                        .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.tertiary)
+                        .textSelection(.enabled)
+
+                    HStack(spacing: 10) {
+                        Button { Task { await runCheck() } } label: {
+                            HStack(spacing: 5) { if checking { Spinner(size: 11) }; Text("校验配置") }
+                        }
+                        .disabled(checking || !draftValid)
+                        .help("用合并后的配置跑 sing-box check，确认能起来再应用")
+                        if let r = checkResult {
+                            Label(r.ok ? "校验通过" : r.msg, systemImage: r.ok ? "checkmark.circle" : "xmark.octagon")
+                                .font(.caption).foregroundStyle(r.ok ? .green : .red)
+                                .lineLimit(2).truncationMode(.middle)
+                        }
+                        Spacer(minLength: 8)
+                        Button("应用并重启") { store.applyNow() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!draftValid)
+                            .help("落盘并重启内核生效")
+                    }
+                }
+                .padding(16)
+            }
+        }
+        .onAppear { if draft.isEmpty { draft = store.text } }
+    }
+
+    private func runCheck() async {
+        checking = true; checkResult = nil
+        defer { checking = false }
+        let err = await KernelRunner.shared.validateConfig(mixinText: draft)
+        checkResult = err == nil ? (true, "") : (false, err!)
     }
 }
 
