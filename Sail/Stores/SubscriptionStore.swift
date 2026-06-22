@@ -36,6 +36,7 @@ struct SubFetchResult {
     var total: Int64 = 0
     var expire: TimeInterval = 0
     var remoteName: String?
+    var clashText: String?   // 原始 Clash YAML（用于导入订阅自带 rules/rule-providers）
 }
 
 /// 订阅存储：增删改查 + 抓取解析 + 持久化到 <应用支持目录>/Sail/subscriptions.json。
@@ -155,6 +156,13 @@ final class SubscriptionStore {
                 subscriptions[i].name = result.remoteName ?? "订阅 \(autoNameIndex ?? i)"
             }
             save()
+            // 导入订阅自带规则（rules/rule-providers）→ 转 sing-box route 落盘。仅在开关开启时下载转换（联网较重）。
+            if SettingsStore.shared.importSubscriptionRules, let yaml = result.clashText {
+                await ClashRuleImport.build(yaml: yaml, into: Self.subrulesDir(id), hasProxy: true, proxyPort: proxyPort)
+                if KernelRunner.shared.isRunning, selectedSubscriptionID == id || selectedWasHere {
+                    await KernelRunner.shared.restart()
+                }
+            }
             // 选中态对账：选中节点原属本订阅、但刷新后已不存在 → 回退到本订阅第一个（运行中会热切换）
             if selectedWasHere, let sel = selectedNode, !subscriptions[i].nodes.contains(sel),
                let first = subscriptions[i].nodes.first {
@@ -199,10 +207,16 @@ final class SubscriptionStore {
         }
     }
 
+    /// 某订阅的导入规则缓存目录（route.json + rule_set 源文件）。
+    nonisolated static func subrulesDir(_ id: UUID) -> URL {
+        KernelPaths.supportDir.appendingPathComponent("subrules/\(id.uuidString)", isDirectory: true)
+    }
+
     func remove(_ id: UUID) {
         subscriptions.removeAll { $0.id == id }
         lastNodeBySub[id] = nil
         saveLastNodes()
+        try? FileManager.default.removeItem(at: Self.subrulesDir(id))   // 清理导入规则缓存
         if selectedSubscriptionID == id {
             selectedSubscriptionID = nil
             saveSubSelection()
@@ -270,6 +284,7 @@ final class SubscriptionStore {
             if let nodes = await parse(text, userAgent: ua, timeoutSec: timeoutSec, proxyPort: proxyPort), !nodes.isEmpty {
                 var result = SubFetchResult(nodes: nodes)
                 applyHeaders(resp, into: &result)
+                if ClashYAMLParser.looksLikeClash(text) { result.clashText = text }
                 return result
             }
         }

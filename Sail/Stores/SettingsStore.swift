@@ -69,6 +69,7 @@ final class SettingsStore {
     private(set) var latencyTimeoutMs: Int = 10000
     private(set) var autoLatencyCheck: Bool = false
     private(set) var latencyIntervalSec: Int = 300
+    private(set) var importSubscriptionRules: Bool = true   // 导入订阅自带的 rules/rule-providers
 
     private var fileURL: URL { KernelPaths.supportDir.appendingPathComponent("config.json") }
 
@@ -138,6 +139,20 @@ final class SettingsStore {
         }
     }
 
+    func setImportSubscriptionRules(_ on: Bool) {
+        guard on != importSubscriptionRules else { return }
+        importSubscriptionRules = on
+        save()
+        // 打开时刷新当前订阅以下载/转换其规则；关闭时重启内核去掉已注入的订阅规则。
+        Task {
+            if on, let id = SubscriptionStore.shared.selectedSubscription?.id {
+                await SubscriptionStore.shared.refresh(id, viaProxy: KernelRunner.shared.isRunning)
+            } else if KernelRunner.shared.isRunning {
+                await KernelRunner.shared.restart()
+            }
+        }
+    }
+
     func setDnsStrategy(_ strategy: String) {
         guard strategy != dnsStrategy, Self.dnsStrategies.contains(strategy) else { return }
         dnsStrategy = strategy
@@ -195,6 +210,7 @@ final class SettingsStore {
             var latencyTimeoutMs: Int = 10000
             var autoLatencyCheck: Bool = false
             var latencyIntervalSec: Int = 300
+            var importSubscriptionRules: Bool = true
         }
         var app = App()
     }
@@ -212,6 +228,7 @@ final class SettingsStore {
         latencyTimeoutMs = min(max(p.app.latencyTimeoutMs, 1000), 60000)
         autoLatencyCheck = p.app.autoLatencyCheck
         latencyIntervalSec = min(max(p.app.latencyIntervalSec, 10), 3600)
+        importSubscriptionRules = p.app.importSubscriptionRules
         // 内核随 app 常驻，启动后由 start() 按这些开关接管，故直接恢复上次状态。
         systemProxyEnabled = p.app.systemProxyEnabled
         tunEnabled = p.app.tunEnabled
@@ -225,7 +242,8 @@ final class SettingsStore {
                       systemProxyEnabled: systemProxyEnabled, tunEnabled: tunEnabled,
                       routeMode: routeMode.rawValue, dnsStrategy: dnsStrategy, tun: tun,
                       latencyTimeoutMs: latencyTimeoutMs, autoLatencyCheck: autoLatencyCheck,
-                      latencyIntervalSec: latencyIntervalSec)
+                      latencyIntervalSec: latencyIntervalSec,
+                      importSubscriptionRules: importSubscriptionRules)
         do {
             try FileManager.default.createDirectory(at: KernelPaths.supportDir, withIntermediateDirectories: true)
             let encoder = JSONEncoder()

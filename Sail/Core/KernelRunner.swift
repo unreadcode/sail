@@ -441,7 +441,16 @@ final class KernelRunner {
         } else if mode == .global {
             route["rules"] = [["action": "sniff"]]
             route["final"] = "proxy"
-        } else { // 规则分流
+        } else if settings.importSubscriptionRules,
+                  let subID = SubscriptionStore.shared.selectedSubscription?.id,
+                  let imported = ClashRuleImport.importedRoute(dir: SubscriptionStore.subrulesDir(subID)),
+                  !imported.rules.isEmpty {
+            // 订阅自带规则（已转换落盘）：用它替代内置 geosite-cn/geoip-cn 分流。
+            // 私网仍先直连；用户手填规则随后注入在最前（优先级最高）。
+            route["rules"] = [["action": "sniff"], ["ip_is_private": true, "outbound": "direct"]] + imported.rules
+            route["rule_set"] = imported.ruleSet
+            route["final"] = imported.final ?? "proxy"
+        } else { // 规则分流（内置）
             route["rules"] = [
                 ["action": "sniff"],
                 ["ip_is_private": true, "outbound": "direct"],

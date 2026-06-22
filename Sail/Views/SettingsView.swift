@@ -373,6 +373,11 @@ private struct AdvancedCard: View {
     var body: some View {
         Card(padding: 0) {
             VStack(spacing: 0) {
+                settingRow("应用订阅自带规则", "导入 Clash 订阅里的 rules / rule-providers（自动下载转成 sing-box 规则集）；去向按订阅的代理组解析为代理/直连/拦截。关闭则用内置「国内直连·其余代理」。") {
+                    Toggle("", isOn: Binding(get: { store.importSubscriptionRules }, set: { store.setImportSubscriptionRules($0) }))
+                        .labelsHidden().toggleStyle(.switch)
+                }
+                Divider().padding(.leading, 16)
                 settingRow("延迟检测超时", "节点延迟测试的超时时间，默认 10000（单位毫秒）") {
                     HStack(spacing: 4) {
                         TextField("", text: $timeoutText)
