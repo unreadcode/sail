@@ -35,6 +35,23 @@ final class ProxyGroupStore {
     private(set) var overrides: [String: String] = [:]
     private static var overridesURL: URL { KernelPaths.supportDir.appendingPathComponent("group-selections.json") }
 
+    /// 原本是 url-test（自动）的组名（来自订阅 route.json）。手动固定后 clash_api 会把它报成 selector，
+    /// 靠这个集合才知道它「本可自动」，从而给出「恢复自动」。按订阅缓存，订阅变了才重算。
+    private(set) var autoGroups: Set<String> = []
+    private var autoGroupsSubID: UUID?
+
+    private func updateAutoGroupsIfNeeded() {
+        let sid = SubscriptionStore.shared.selectedSubscriptionID
+        guard sid != autoGroupsSubID else { return }
+        autoGroupsSubID = sid
+        guard let sub = SubscriptionStore.shared.selectedSubscription,
+              let r = ClashRuleImport.importedRoute(dir: SubscriptionStore.subrulesDir(sub.id)) else { autoGroups = []; return }
+        autoGroups = Set(r.groups.compactMap { ($0["type"] as? String) == "urltest" ? $0["tag"] as? String : nil })
+    }
+
+    /// 某组是否「被手动固定的自动组」（可恢复自动）。
+    func isPinnedAuto(_ name: String) -> Bool { autoGroups.contains(name) && overrides[name] != nil }
+
     private init() { loadOverrides() }
 
     private func loadOverrides() {
@@ -45,6 +62,10 @@ final class ProxyGroupStore {
 
     private func setOverride(_ group: String, _ member: String) {
         overrides[group] = member
+        saveOverrides()
+    }
+
+    private func saveOverrides() {
         try? FileManager.default.createDirectory(at: KernelPaths.supportDir, withIntermediateDirectories: true)
         if let data = try? JSONEncoder().encode(overrides) {
             try? data.write(to: Self.overridesURL, options: .atomic)
@@ -67,6 +88,7 @@ final class ProxyGroupStore {
     // MARK: 拉取
 
     func refresh() async {
+        updateAutoGroupsIfNeeded()
         guard KernelRunner.shared.isRunning else {
             loadPersisted()   // 内核没跑：展示订阅持久化的分组结构（无延迟、不可切换）
             return
@@ -183,14 +205,26 @@ final class ProxyGroupStore {
     // MARK: 切换 selector
 
     func select(_ group: Group, _ member: String) async {
-        guard group.kind == .selector, group.now != member else { return }
+        guard group.now != member else { return }
         setOverride(group.name, member)                          // 持久化选择（离线也记住，配置生成时作 selector default）
         if let i = groups.firstIndex(where: { $0.id == group.id }) {
             groups[i].now = member                               // 立即反映
         }
-        if live {
-            _ = await Self.put(port: port, group: group.name, name: member)   // 内核在跑：运行时立即切换
+        if group.kind == .selector {
+            if live { _ = await Self.put(port: port, group: group.name, name: member) }   // selector：运行时即时切，无需重启
+        } else {
+            // url-test：sing-box 不支持手动切 → 持久化选择后重启，makeConfig 会把该组退化成 selector 固定此节点
+            await KernelRunner.shared.restartIfConfigChanged()
         }
+        await refresh()
+    }
+
+    /// 把某个被手动固定的自动组恢复为「按延迟自动选择」：清掉持久化选择并重启应用。
+    func resetToAuto(_ group: Group) async {
+        guard overrides[group.name] != nil else { return }
+        overrides[group.name] = nil
+        saveOverrides()
+        await KernelRunner.shared.restartIfConfigChanged()
         await refresh()
     }
 
@@ -213,11 +247,14 @@ final class ProxyGroupStore {
         testing.insert(group.name)
         defer { testing.remove(group.name) }
 
+        // 内核没跑：测速不需要主内核——把成员映射回订阅节点，走 LatencyTester 冷路径（临时实例）。
+        guard live else { await testGroupOffline(group); return }
+
         let timeout = SettingsStore.shared.latencyTimeoutMs
         let names = group.members.map(\.name)
         let port = self.port
         let results: [String: Int?] = await withTaskGroup(of: (String, Int?).self) { tg in
-            for n in names { tg.addTask { (n, await Self.delay(port: port, name: n, timeoutMs: timeout)) } }
+            for n in names { tg.addTask { (n, await Self.delayBest(port: port, name: n, timeoutMs: timeout)) } }
             var acc: [String: Int?] = [:]
             for await r in tg { acc[r.0] = r.1 }
             return acc
@@ -230,9 +267,59 @@ final class ProxyGroupStore {
         await refresh()   // url-test 组测速后会自动改 now，刷新拿到最新选择
     }
 
+    /// 内核未运行时的整组测速：成员 tag → 订阅节点（嵌套组成员跳过），交给 LatencyTester
+    /// 冷路径（独立临时 sing-box 实例测、与主内核无关），完成后把延迟写回成员。
+    private func testGroupOffline(_ group: Group) async {
+        guard let sub = SubscriptionStore.shared.selectedSubscription, !sub.nodes.isEmpty else { return }
+        let tagToNode = Self.tagToNodeMap(sub.nodes)
+        // 真实节点成员（非嵌套组）才能直接测；保留 tag→node 以便写回。
+        let pairs = group.members.compactMap { m -> (tag: String, node: ProxyNode)? in
+            guard !m.isGroup, let n = tagToNode[m.name] else { return nil }
+            return (m.name, n)
+        }
+        guard !pairs.isEmpty else { return }
+        await LatencyTester.shared.testAll(pairs.map(\.node))
+        guard let gi = groups.firstIndex(where: { $0.id == group.id }) else { return }
+        for (tag, node) in pairs {
+            guard let mi = groups[gi].members.firstIndex(where: { $0.name == tag }) else { continue }
+            switch LatencyTester.shared.result(for: node) {
+            case .ok(let ms): groups[gi].members[mi].delay = ms
+            case .timeout:    groups[gi].members[mi].delay = nil
+            default: break
+            }
+        }
+    }
+
+    /// 重建「成员 tag → 节点」映射，与 KernelRunner.nodeOutbounds 的取 tag/去重逻辑完全一致，
+    /// 保证离线成员名能对回正确的节点。
+    nonisolated private static func tagToNodeMap(_ nodes: [ProxyNode]) -> [String: ProxyNode] {
+        var map: [String: ProxyNode] = [:]
+        var used = Set<String>()
+        for node in nodes {
+            guard let data = node.outboundJSON.data(using: .utf8),
+                  (try? JSONSerialization.jsonObject(with: data)) != nil else { continue }
+            let base = node.label.isEmpty ? "node" : node.label
+            var tag = base, i = 2
+            while used.contains(tag) { tag = "\(base) \(i)"; i += 1 }
+            used.insert(tag)
+            map[tag] = node
+        }
+        return map
+    }
+
+    /// 连测 3 次取最小（与单节点/离线一致）：首发常含冷启动握手，取最小更接近真实延迟。超时即止。
+    nonisolated private static func delayBest(port: Int, name: String, timeoutMs: Int) async -> Int? {
+        var best: Int?
+        for _ in 0..<3 {
+            guard let ms = await delay(port: port, name: name, timeoutMs: timeoutMs) else { break }
+            best = min(best ?? ms, ms)
+        }
+        return best
+    }
+
     nonisolated private static func delay(port: Int, name: String, timeoutMs: Int) async -> Int? {
         let enc = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? name
-        let testURL = "http://www.gstatic.com/generate_204"
+        let testURL = "http://cp.cloudflare.com/generate_204"   // Cloudflare 更普遍可达，gstatic 不少节点连不上
         let urlEnc = testURL.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? testURL
         guard let url = URL(string: "http://127.0.0.1:\(port)/proxies/\(enc)/delay?timeout=\(timeoutMs)&url=\(urlEnc)") else { return nil }
         let req = ClashAPI.request(url, timeout: Double(timeoutMs) / 1000 + 3)

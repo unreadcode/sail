@@ -69,8 +69,7 @@ struct GroupsView: View {
 
     @ViewBuilder private var memberDetail: some View {
         if let group = current {
-            let isSelector = group.kind == .selector
-            let canSelect = isSelector   // selector 组随时可选；离线选择持久化，内核启动后生效
+            let canSelect = true   // 所有组都可手动选；url-test 选中即固定（退化 selector），离线也记住
             VStack(spacing: 0) {
                 detailHeader(group)
                 Divider()
@@ -95,33 +94,43 @@ struct GroupsView: View {
     }
 
     private func detailHeader(_ group: ProxyGroupStore.Group) -> some View {
-        let isSelector = group.kind == .selector
+        let isAuto = store.autoGroups.contains(group.name)       // 原本是自动组
+        let pinned = store.isPinnedAuto(group.name)              // 自动组被手动固定
         let testing = store.testing.contains(group.name)
+        let badge = isAuto ? (pinned ? "自动·固定" : "自动") : "手动"
+        let accent = isAuto ? Color.mint : Color.accentColor
         return HStack(spacing: 10) {
             Text(group.name).font(.system(size: 16, weight: .semibold, design: .rounded)).lineLimit(1)
-            Text(isSelector ? "手动" : "自动")
+            Text(badge)
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
                 .padding(.horizontal, 6).padding(.vertical, 2)
-                .background((isSelector ? Color.accentColor : Color.mint).opacity(0.16), in: Capsule())
-                .foregroundStyle(isSelector ? Color.accentColor : .mint)
+                .background(accent.opacity(0.16), in: Capsule())
+                .foregroundStyle(accent)
             Text("\(group.members.count) 个节点").font(.system(size: 11)).foregroundStyle(.secondary)
             Spacer(minLength: 8)
+            if pinned {
+                Button { Task { await store.resetToAuto(group) } } label: {
+                    Label("恢复自动", systemImage: "wand.and.stars")
+                }
+                .controlSize(.small)
+                .help("清除手动选择，恢复按延迟自动选")
+            }
             Button { Task { await store.testGroup(group) } } label: {
                 if testing { HStack(spacing: 5) { Spinner(size: 12); Text("测速中") } }
                 else { Label("测速", systemImage: "gauge.with.dots.needle.bottom.50percent") }
             }
             .controlSize(.small)
-            .disabled(testing || !store.live)
-            .help(store.live ? "测速整组" : "内核未运行，无法测速")
+            .disabled(testing)
+            .help(store.live ? "测速整组" : "测速整组（内核未运行，用临时实例测）")
         }
         .padding(.horizontal, 18).padding(.vertical, 12)
     }
 
-    /// 离线提示条：内核未运行时，分组来自订阅持久化结构，仅供查看，切换/测速需内核。
+    /// 离线提示条：内核未运行时，分组来自订阅持久化结构；选择已记住、测速走临时实例，切换实际生效需内核启动。
     private var offlineBanner: some View {
         HStack(spacing: 8) {
             Image(systemName: "moon.zzz").font(.system(size: 12))
-            Text("内核未运行：可正常选择节点（已记住，内核启动后生效），但暂不能测速。")
+            Text("内核未运行：可正常选择节点（已记住，内核启动后生效）与测速（用临时实例）。")
                 .font(.system(size: 12))
             Spacer(minLength: 0)
         }

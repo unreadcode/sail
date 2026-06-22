@@ -267,23 +267,31 @@ struct OverviewView: View {
     /// 节点选择（独立框）：左侧菜单选节点（展开每项后带延迟），右侧延迟/测速（hover 高亮、点击测速、转圈占位）。
     @ViewBuilder private var memberPicker: some View {
         let group = activeGroup
-        let isSelector = group?.kind == .selector   // selector 组随时可选（离线持久化）；url-test 只读
+        let isAuto = group.map { groupStore.autoGroups.contains($0.name) } ?? false   // 原本是自动组
+        let pinned = group.map { groupStore.isPinnedAuto($0.name) } ?? false
         let testing = group.map { groupStore.testing.contains($0.name) } ?? false
         let nowDelay: Int? = group.map(\.now).flatMap { $0.isEmpty ? nil : resolveDelay($0) }
         HStack(spacing: 0) {
             Menu {
                 if let group, !group.members.isEmpty {
-                    if !isSelector { Text("自动分组：由内核按延迟选择，不可手动切换") }
-                    else if !groupStore.live { Text("内核未运行：选择会被记住，启动后生效") }
+                    if !groupStore.live { Text("内核未运行：选择会被记住，启动后生效") }
+                    // 自动组：提供「按延迟自动」选项（清除手动固定）
+                    if isAuto {
+                        Button { Task { await groupStore.resetToAuto(group) } } label: {
+                            if pinned { Text("⚡ 按延迟自动选择") }
+                            else { Label("⚡ 按延迟自动选择", systemImage: "checkmark") }
+                        }
+                        Divider()
+                    }
                     ForEach(group.members) { m in
                         Button {
-                            if isSelector { Task { await groupStore.select(group, m.name) } }
+                            Task { await groupStore.select(group, m.name) }
                         } label: {
                             let suffix = m.delay.map { "　\($0) ms" } ?? ""   // 每个节点后显示延迟
-                            if m.name == group.now { Label("\(m.name)\(suffix)", systemImage: "checkmark") }
+                            // 自动模式（未固定）时不给成员打勾，避免和「自动」选项冲突
+                            if m.name == group.now && !(isAuto && !pinned) { Label("\(m.name)\(suffix)", systemImage: "checkmark") }
                             else { Text("\(m.name)\(suffix)") }
                         }
-                        .disabled(!isSelector)
                     }
                 } else { Text("该分组暂无成员") }
             } label: {
@@ -299,7 +307,7 @@ struct OverviewView: View {
                 .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden)
-            .help(isSelector ? "点击切换组内节点" : "自动分组，由内核按延迟选择")
+            .help("点击切换组内节点")
 
             Divider().frame(height: 26)
 
