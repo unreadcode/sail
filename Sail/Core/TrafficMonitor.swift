@@ -242,6 +242,7 @@ final class TrafficMonitor {
     private func stream(_ path: String, handle: @escaping ([String: Any]) -> Void) async {
         guard let url = URL(string: "http://127.0.0.1:\(Self.apiPort)\(path)") else { return }
         while !Task.isCancelled {
+            let startedAt = Date()
             do {
                 let (bytes, resp) = try await Self.session.bytes(for: ClashAPI.request(url))
                 guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
@@ -253,8 +254,14 @@ final class TrafficMonitor {
                     }
                 }
             } catch {
-                if Task.isCancelled { return }
-                try? await Task.sleep(for: .seconds(1)) // 等内核 api 就绪后重连
+                // 失败照常进入下方退避
+            }
+            if Task.isCancelled { return }
+            // 防忙循环（CPU 打满的根因）：本次连接存活不足 1s —— 流瞬间结束/失败/被秒断 ——
+            // 退避 1s 再重连，否则会零间隔狂建/拆 clash_api 连接把 CFNetwork 打满。
+            // 长命流（内核停了才结束）立即重连，监控不掉帧。
+            if Date().timeIntervalSince(startedAt) < 1 {
+                try? await Task.sleep(for: .seconds(1))
             }
         }
     }
