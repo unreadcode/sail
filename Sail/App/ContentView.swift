@@ -39,7 +39,7 @@ enum NavItem: String, CaseIterable, Identifiable {
         case .groups: "square.stack.3d.up"
         case .rules: "arrow.triangle.branch"
         case .connections: "network"
-        case .traffic: "chart.bar.xaxis"
+        case .traffic: "arrow.up.arrow.down"
         case .logs: "terminal"
         case .settings: "gearshape"
         }
