@@ -33,7 +33,7 @@ jobs:
 
       - name: 发布到 Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # Sail.dmg 给人下载；Sail.app.zip 供 app 内自动更新；源码包 GitHub 自动附带
           files: |
