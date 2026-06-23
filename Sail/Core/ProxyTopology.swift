@@ -151,12 +151,13 @@ enum ProxyTopology {
             var o: [String: Any] = ["type": type, "tag": tag, "outbounds": members]
             if type == "urltest" {
                 o["url"] = healthCheckURL
-                if let iv = g["interval"] as? String {
-                    o["interval"] = iv
-                    // sing-box 要求 interval ≤ idle_timeout；按存的 interval 推算一个更大的 idle_timeout。
-                    let n = Int(iv.dropLast()) ?? 300   // "Ns" → N
-                    o["idle_timeout"] = "\(n + 1800)s"
-                }
+                // 健康检查间隔限幅到 [60, 600]s：机场常把 interval 设得离谱（见过 36000s=10h），
+                // 导致 url-test 几乎不重测、延迟一直显示「-」；过小又频繁耗流。统一收进合理区间。
+                // sing-box 要求 interval ≤ idle_timeout，故 idle_timeout 按 interval+1800s 推算。
+                let raw = (g["interval"] as? String).flatMap { Int($0.dropLast()) } ?? 300   // "Ns" → N
+                let n = min(max(raw, 60), 600)
+                o["interval"] = "\(n)s"
+                o["idle_timeout"] = "\(n + 1800)s"
                 if let tol = g["tolerance"] as? Int { o["tolerance"] = tol }
             } else {
                 // selector：default 取用户手动选择（须在成员内），否则首个。
