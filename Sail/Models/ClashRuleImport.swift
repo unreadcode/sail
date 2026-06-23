@@ -88,6 +88,11 @@ enum ClashRuleImport {
                 "members": (g["proxies"] as? [Any])?.compactMap { $0 as? String } ?? [],
                 "useAll": !((g["use"] as? [Any])?.isEmpty ?? true),    // use 任意 provider → 全部订阅节点
             ]
+            // filter / exclude-filter（正则，按节点名筛选 use 展开的节点）：现代机场常用
+            // `use:[provider] + filter:香港|HK` 给组按地区筛节点。Sail 把所有 provider 拍平成一个列表，
+            // 无法按 provider 限定范围，但能按名称正则筛——覆盖绝大多数 filter 用法。
+            if let f = g["filter"] as? String, !f.isEmpty { gd["filter"] = f }
+            if let ex = g["exclude-filter"] as? String, !ex.isEmpty { gd["excludeFilter"] = ex }
             if gd["type"] as? String == "urltest" {
                 gd["url"] = "http://cp.cloudflare.com/generate_204"   // 统一用更普遍可达的地址（运行时 groupOutbounds 也会覆盖）
                 let iv = (g["interval"] as? Int) ?? (Int((g["interval"] as? String) ?? "") ?? 300)

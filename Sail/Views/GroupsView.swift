@@ -69,7 +69,7 @@ struct GroupsView: View {
 
     @ViewBuilder private var memberDetail: some View {
         if let group = current {
-            let canSelect = true   // 所有组都可手动选；url-test 选中即固定（退化 selector），离线也记住
+            let canSelect = group.kind == .selector   // url-test 只读自动；selector 可手动切（含合成的 Proxy）
             VStack(spacing: 0) {
                 detailHeader(group)
                 Divider()
@@ -94,10 +94,9 @@ struct GroupsView: View {
     }
 
     private func detailHeader(_ group: ProxyGroupStore.Group) -> some View {
-        let isAuto = store.autoGroups.contains(group.name)       // 原本是自动组
-        let pinned = store.isPinnedAuto(group.name)              // 自动组被手动固定
+        let isAuto = group.kind == .urltest                      // url-test = 按延迟自动（只读）
         let testing = store.testing.contains(group.name)
-        let badge = isAuto ? (pinned ? "自动·固定" : "自动") : "手动"
+        let badge = isAuto ? "自动" : "手动"
         let accent = isAuto ? Color.mint : Color.accentColor
         return HStack(spacing: 10) {
             Text(group.name).font(.system(size: 16, weight: .semibold, design: .rounded)).lineLimit(1)
@@ -108,13 +107,6 @@ struct GroupsView: View {
                 .foregroundStyle(accent)
             Text("\(group.members.count) 个节点").font(.system(size: 11)).foregroundStyle(.secondary)
             Spacer(minLength: 8)
-            if pinned {
-                Button { Task { await store.resetToAuto(group) } } label: {
-                    Label("恢复自动", systemImage: "wand.and.stars")
-                }
-                .controlSize(.small)
-                .help("清除手动选择，恢复按延迟自动选")
-            }
             Button { Task { await store.testGroup(group) } } label: {
                 if testing { HStack(spacing: 5) { Spinner(size: 12); Text("测速中") } }
                 else { Label("测速", systemImage: "gauge.with.dots.needle.bottom.50percent") }

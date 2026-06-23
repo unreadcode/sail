@@ -116,8 +116,9 @@ final class RuleStore {
         persistAndApply()
     }
 
-    /// 转成 sing-box route 规则（按列表顺序）。代理类规则仅在有代理出站时才加入。
-    func singBoxRules(hasProxy: Bool) -> [[String: Any]] {
+    /// 转成 sing-box route 规则（按列表顺序）。代理类规则仅在有代理出站时才加入，去向 = 主选择器 tag。
+    /// proxyTag 为 nil 表示无可用代理出站（跳过所有「走代理」规则）。
+    func singBoxRules(proxyTag: String?) -> [[String: Any]] {
         var out: [[String: Any]] = []
         for r in rules where r.enabled {
             let v = r.value.trimmingCharacters(in: .whitespaces)
@@ -162,8 +163,8 @@ final class RuleStore {
             if applyAction {
                 switch r.action {
                 case .proxy:
-                    guard hasProxy else { continue }
-                    dict["outbound"] = "proxy"
+                    guard let pt = proxyTag else { continue }
+                    dict["outbound"] = pt
                 case .direct:
                     dict["outbound"] = "direct"
                 case .reject:
@@ -207,13 +208,13 @@ final class RuleStore {
         return (Array(Set(ports)).sorted(), Array(Set(ranges)))
     }
 
-    /// geo 规则用到的远程 rule_set 定义（去重）；下载走代理（无代理则直连）。
-    func geoRuleSets(hasProxy: Bool) -> [[String: Any]] {
-        let detour = hasProxy ? "proxy" : "direct"
+    /// geo 规则用到的远程 rule_set 定义（去重）；下载走主选择器（无代理则直连）。
+    func geoRuleSets(proxyTag: String?) -> [[String: Any]] {
+        let detour = proxyTag ?? "direct"
         var seen = Set<String>()
         var out: [[String: Any]] = []
         for r in rules where r.enabled && r.match.isGeo {
-            if r.action == .proxy && !hasProxy { continue }
+            if r.action == .proxy && proxyTag == nil { continue }
             let v = r.value.trimmingCharacters(in: .whitespaces).lowercased()
             guard Self.isValidGeoCode(v) else { continue }
             let tag: String, url: String
@@ -235,13 +236,13 @@ final class RuleStore {
         return out
     }
 
-    /// 用户自定义远程规则集（ruleSetURL）需要的 rule_set 定义（去重）；下载走代理（无代理则直连）。
-    func customRuleSets(hasProxy: Bool) -> [[String: Any]] {
-        let detour = hasProxy ? "proxy" : "direct"
+    /// 用户自定义远程规则集（ruleSetURL）需要的 rule_set 定义（去重）；下载走主选择器（无代理则直连）。
+    func customRuleSets(proxyTag: String?) -> [[String: Any]] {
+        let detour = proxyTag ?? "direct"
         var seen = Set<String>()
         var out: [[String: Any]] = []
         for r in rules where r.enabled && r.match == .ruleSetURL {
-            if r.action == .proxy && !hasProxy { continue }
+            if r.action == .proxy && proxyTag == nil { continue }
             guard let url = Self.normalizedURL(r.value), let tag = Self.ruleSetTag(url) else { continue }
             guard seen.insert(tag).inserted else { continue }
             // .json 用 source 格式，其余（.srs 等）按 binary

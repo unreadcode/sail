@@ -47,68 +47,31 @@ final class SubscriptionStore {
 
     private(set) var subscriptions: [Subscription] = []
     private(set) var busyIDs: Set<UUID> = []
-    /// 当前选中（用于内核出站）的节点；按 outboundJSON 作稳定标识，刷新后仍可匹配。
-    private(set) var selectedNode: ProxyNode?
-    /// 当前选中的订阅 ID（决定首页节点列表的范围）。
+    /// 当前选中的订阅 ID（决定节点 / 分组范围）。未显式选择时回退到第一个订阅。
+    /// 节点选择不再存在这里——统一收敛到 ProxyGroupStore 的每订阅每组 override（见 ProxyTopology / ProxyGroupStore）。
     private(set) var selectedSubscriptionID: UUID?
-    /// 每个订阅上次选中的节点（subID → outboundJSON）；「使用」时据此恢复。
-    private(set) var lastNodeBySub: [UUID: String] = [:]
 
     private var fileURL: URL { KernelPaths.supportDir.appendingPathComponent("subscriptions.json") }
-    private var selectionURL: URL { KernelPaths.supportDir.appendingPathComponent("selected-node.json") }
     private var subSelectionURL: URL { KernelPaths.supportDir.appendingPathComponent("selected-subscription.json") }
-    private var lastNodesURL: URL { KernelPaths.supportDir.appendingPathComponent("last-nodes.json") }
 
-    private init() { load(); loadSelection(); loadSubSelection(); loadLastNodes() }
+    private init() { load(); loadSubSelection() }
 
     var allNodes: [ProxyNode] { subscriptions.flatMap(\.nodes) }
 
-    /// 当前订阅：优先用显式选中的；否则回退到「含当前节点的订阅」；都没有则未选择（nil）。
+    /// 当前订阅：优先显式选中的；否则回退到第一个订阅（永远有一个活跃订阅，只要有订阅存在）。
     var selectedSubscription: Subscription? {
         if let id = selectedSubscriptionID, let s = subscriptions.first(where: { $0.id == id }) { return s }
-        if let node = selectedNode, let s = subscriptions.first(where: { $0.nodes.contains(node) }) { return s }
-        return nil
+        return subscriptions.first
     }
 
     func isBusy(_ id: UUID) -> Bool { busyIDs.contains(id) }
 
-    func isSelected(_ node: ProxyNode) -> Bool { selectedNode?.outboundJSON == node.outboundJSON }
-
-    /// 选中节点；同步把所属订阅记为当前订阅、并记住该订阅的此次选择；运行中则热切换。
-    func selectNode(_ node: ProxyNode) async {
-        selectedNode = node
-        saveSelection()
-        if let sub = subscriptions.first(where: { $0.nodes.contains(node) }) {
-            selectedSubscriptionID = sub.id
-            saveSubSelection()
-            lastNodeBySub[sub.id] = node.outboundJSON
-            saveLastNodes()
-        }
-        if KernelRunner.shared.isRunning {
-            await KernelRunner.shared.restartIfConfigChanged()
-        }
-    }
-
-    /// 使用某订阅：恢复它上次选过的节点；没选过则用第一个。
+    /// 切换当前订阅：整套出站（节点 + 分组 + 选择 override，均按订阅）随之变化，运行中重建配置生效。
     func selectSubscription(_ id: UUID) async {
+        guard subscriptions.contains(where: { $0.id == id }) else { return }
         selectedSubscriptionID = id
         saveSubSelection()
-        guard let sub = subscriptions.first(where: { $0.id == id }) else { return }
-        let remembered = lastNodeBySub[id].flatMap { json in sub.nodes.first { $0.outboundJSON == json } }
-        if let node = remembered ?? sub.nodes.first { await selectNode(node) }
-    }
-
-    /// 测速该订阅全部节点，选用延迟最低的可用节点。
-    func useFastest(in sub: Subscription) async {
-        await LatencyTester.shared.testAll(sub.nodes)
-        let results = LatencyTester.shared.results
-        var best: (node: ProxyNode, ms: Int)?
-        for node in sub.nodes {
-            if case .ok(let ms) = results[node.outboundJSON], best == nil || ms < best!.ms {
-                best = (node, ms)
-            }
-        }
-        if let best { await selectNode(best.node) }
+        if KernelRunner.shared.isRunning { await KernelRunner.shared.restartIfConfigChanged() }
     }
 
     // MARK: 动作
@@ -142,8 +105,6 @@ final class SubscriptionStore {
         do {
             let result = try await Self.fetchNodes(from: url, userAgent: ua, timeoutSec: timeout, proxyPort: proxyPort)
             guard let i = subscriptions.firstIndex(where: { $0.id == id }) else { return }
-            // 替换节点前记下：当前选中节点是否来自本订阅（按内容判等）
-            let selectedWasHere = selectedNode.map { subscriptions[i].nodes.contains($0) } ?? false
             subscriptions[i].nodes = result.nodes
             subscriptions[i].updatedAt = Date()
             subscriptions[i].lastError = nil
@@ -159,14 +120,10 @@ final class SubscriptionStore {
             // 导入订阅自带规则（rules/rule-providers）→ 转 sing-box route 落盘。仅在开关开启时下载转换（联网较重）。
             if SettingsStore.shared.importSubscriptionRules, let yaml = result.clashText {
                 await ClashRuleImport.build(yaml: yaml, into: Self.subrulesDir(id), hasProxy: true, proxyPort: proxyPort)
-                if KernelRunner.shared.isRunning, selectedSubscriptionID == id || selectedWasHere {
-                    await KernelRunner.shared.restartIfConfigChanged()
-                }
             }
-            // 选中态对账：选中节点原属本订阅、但刷新后已不存在 → 回退到本订阅第一个（运行中会热切换）
-            if selectedWasHere, let sel = selectedNode, !subscriptions[i].nodes.contains(sel),
-               let first = subscriptions[i].nodes.first {
-                await selectNode(first)
+            // 刷新的是当前订阅 → 节点/分组可能变，重建运行配置（选择 override 按订阅持久化，自动复用）。
+            if KernelRunner.shared.isRunning, selectedSubscription?.id == id {
+                await KernelRunner.shared.restartIfConfigChanged()
             }
             return
         } catch {
@@ -213,23 +170,18 @@ final class SubscriptionStore {
     }
 
     func remove(_ id: UUID) {
+        let wasActive = selectedSubscription?.id == id
         subscriptions.removeAll { $0.id == id }
-        lastNodeBySub[id] = nil
-        saveLastNodes()
         try? FileManager.default.removeItem(at: Self.subrulesDir(id))   // 清理导入规则缓存
         if selectedSubscriptionID == id {
             selectedSubscriptionID = nil
             saveSubSelection()
         }
-        // 选中的节点若已不属于任何订阅（其订阅被删）→ 清空，首页回到「未选择」
-        if let node = selectedNode, !subscriptions.contains(where: { $0.nodes.contains(node) }) {
-            selectedNode = nil
-            saveSelection()
-            if KernelRunner.shared.isRunning {
-                Task { await KernelRunner.shared.restartIfConfigChanged() }
-            }
-        }
         save()
+        // 删的是当前订阅 → 出站集合变化，重建运行配置（无订阅则回到全直连）。
+        if wasActive, KernelRunner.shared.isRunning {
+            Task { await KernelRunner.shared.restartIfConfigChanged() }
+        }
     }
 
     func rename(_ id: UUID, to name: String) {
@@ -440,41 +392,10 @@ final class SubscriptionStore {
         }
     }
 
-    private func loadSelection() {
-        guard let data = try? Data(contentsOf: selectionURL),
-              let node = try? JSONDecoder().decode(ProxyNode.self, from: data) else { return }
-        selectedNode = node
-    }
-
-    private func saveSelection() {
-        do {
-            try FileManager.default.createDirectory(at: KernelPaths.supportDir, withIntermediateDirectories: true)
-            guard let node = selectedNode else {
-                try? FileManager.default.removeItem(at: selectionURL)
-                return
-            }
-            let data = try JSONEncoder().encode(node)
-            try data.write(to: selectionURL)
-        } catch {
-            // 尽力而为
-        }
-    }
-
     private func loadSubSelection() {
         guard let data = try? Data(contentsOf: subSelectionURL),
               let id = try? JSONDecoder().decode(UUID.self, from: data) else { return }
         selectedSubscriptionID = id
-    }
-
-    private func loadLastNodes() {
-        guard let data = try? Data(contentsOf: lastNodesURL),
-              let map = try? JSONDecoder().decode([UUID: String].self, from: data) else { return }
-        lastNodeBySub = map
-    }
-
-    private func saveLastNodes() {
-        try? FileManager.default.createDirectory(at: KernelPaths.supportDir, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(lastNodeBySub) { try? data.write(to: lastNodesURL) }
     }
 
     private func saveSubSelection() {

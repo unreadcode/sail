@@ -66,8 +66,7 @@ struct OverviewView: View {
                         groupPicker
                         memberPicker
                     } else {
-                        nodePicker
-                        HStack(spacing: 12) { latencyBadge }
+                        noGroupsHint
                     }
                 }
                 Spacer(minLength: 16)
@@ -200,44 +199,14 @@ struct OverviewView: View {
                     in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
-    private var store: SubscriptionStore { SubscriptionStore.shared }
-
-    // MARK: 当前节点（可切换 —— 明显的下拉胶囊）
-
-    /// 节点选择菜单：只列出「当前订阅」里的节点，选中即热切换出站。
-    @ViewBuilder private var nodePicker: some View {
-        Menu {
-            let nodes = store.selectedSubscription?.nodes ?? []
-            if nodes.isEmpty {
-                Text("该订阅暂无节点")
-            } else {
-                ForEach(nodes) { node in
-                    Button {
-                        Task { await store.selectNode(node) }
-                    } label: {
-                        if store.isSelected(node) {
-                            Label(node.label, systemImage: "checkmark")
-                        } else {
-                            Text(node.label)
-                        }
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 15)).foregroundStyle(Color.accentColor)
-                Text(store.selectedNode?.label ?? "未选择节点")
-                    .font(.system(size: 18, weight: .bold, design: .rounded))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-            }
+    /// 无分组（未选订阅 / 暂无节点）时的占位提示。
+    private var noGroupsHint: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "antenna.radiowaves.left.and.right").font(.system(size: 15)).foregroundStyle(.secondary)
+            Text(SubscriptionStore.shared.selectedSubscription == nil ? "未添加订阅" : "该订阅暂无可用节点")
+                .font(.system(size: 18, weight: .bold, design: .rounded))
+                .foregroundStyle(.secondary).lineLimit(1)
         }
-        .menuStyle(.button)
-        .buttonStyle(.bordered)
-        .tint(.accentColor)
-        .controlSize(.large)
-        .fixedSize()
-        .help("点击切换节点")
     }
 
     // MARK: 分组式选择（先选分组 → 再选组内节点）
@@ -268,8 +237,6 @@ struct OverviewView: View {
     /// 节点选择（独立框）：左侧菜单选节点（展开每项后带延迟），右侧延迟/测速（hover 高亮、点击测速、转圈占位）。
     @ViewBuilder private var memberPicker: some View {
         let group = activeGroup
-        let isAuto = group.map { groupStore.autoGroups.contains($0.name) } ?? false   // 原本是自动组
-        let pinned = group.map { groupStore.isPinnedAuto($0.name) } ?? false
         let testing = group.map { groupStore.testing.contains($0.name) } ?? false
         let nowDelay: Int? = group.map(\.now).flatMap { $0.isEmpty ? nil : resolveDelay($0) }
         HStack(spacing: 0) {
@@ -288,7 +255,7 @@ struct OverviewView: View {
             .buttonStyle(.plain)
             .help("点击切换组内节点")
             .popover(isPresented: $showNodes, arrowEdge: .bottom) {
-                if let group { nodePopover(group, isAuto: isAuto, pinned: pinned) }
+                if let group { nodePopover(group) }
             }
 
             Divider().frame(height: 26)
@@ -304,23 +271,24 @@ struct OverviewView: View {
     }
 
     /// 节点选择 popover：限高 + 可滚动，节点再多也不会撑满屏幕。
-    @ViewBuilder private func nodePopover(_ group: ProxyGroupStore.Group, isAuto: Bool, pinned: Bool) -> some View {
+    /// selector 组可点选；url-test 组只读（内核按延迟自动选，要钉节点请到其父 selector）。
+    @ViewBuilder private func nodePopover(_ group: ProxyGroupStore.Group) -> some View {
+        let canSelect = group.kind == .selector
         ScrollView {
             VStack(alignment: .leading, spacing: 2) {
                 if !groupStore.live {
                     Text("内核未运行：选择会被记住，启动后生效")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                         .padding(.horizontal, 8).padding(.vertical, 4)
-                }
-                if isAuto {   // 自动组：按延迟自动（清除手动固定）
-                    NodeRow(title: "⚡ 按延迟自动选择", proto: "", delay: nil, selected: !pinned) {
-                        showNodes = false; Task { await groupStore.resetToAuto(group) }
-                    }
-                    Divider().padding(.vertical, 2)
+                } else if !canSelect {
+                    Text("自动组：内核按延迟自动选择（只读）")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
                 }
                 ForEach(group.members) { m in
                     NodeRow(title: m.name, proto: m.isGroup ? "" : m.proto, delay: m.delay,
-                            selected: m.name == group.now && !(isAuto && !pinned)) {
+                            selected: m.name == group.now) {
+                        guard canSelect else { return }
                         showNodes = false; Task { await groupStore.select(group, m.name) }
                     }
                 }
@@ -346,40 +314,6 @@ struct OverviewView: View {
             if let m = grp.members.first(where: { $0.name == name }) { return m.delay }
         }
         return nil
-    }
-
-    private var latencyBadge: some View {
-        Button {
-            if let node = store.selectedNode {
-                Task { await LatencyTester.shared.testOne(node) }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "gauge.with.dots.needle.67percent").font(.system(size: 11))
-                Text(latencyLabel)
-            }
-            .font(.system(size: 12, weight: .medium, design: .monospaced))
-            .foregroundStyle(latencyColor)
-        }
-        .buttonStyle(.plain)
-        .disabled(store.selectedNode == nil || LatencyTester.shared.running)
-        .help("点击测试当前节点延迟")
-    }
-
-    private var latencyLabel: String {
-        guard let node = store.selectedNode else { return "—" }
-        switch LatencyTester.shared.result(for: node) {
-        case .ok(let ms): return "\(ms) ms"
-        case .testing: return "测速中…"
-        case .timeout: return "超时"
-        case nil: return "点击测速"
-        }
-    }
-
-    private var latencyColor: Color {
-        guard let node = store.selectedNode,
-              case .ok(let ms) = LatencyTester.shared.result(for: node) else { return .secondary }
-        return ms < 200 ? .green : (ms < 500 ? .orange : .red)
     }
 
     private var liveSpeeds: some View {

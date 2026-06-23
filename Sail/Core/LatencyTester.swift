@@ -58,17 +58,9 @@ final class LatencyTester {
         for node in nodes { results[node.outboundJSON] = .testing }
         let timeoutMs = SettingsStore.shared.latencyTimeoutMs
 
-        // 热路径：只测「当前选中节点」且主内核正在运行时，直接用运行中内核的 clash_api
-        // （连接是温的，不必另起实例），测多次取最小，结果更接近 Clash Verge。
-        if nodes.count == 1,
-           KernelRunner.shared.isRunning,
-           SubscriptionStore.shared.isSelected(nodes[0]) {
-            let res = await Self.delayBest(tag: "proxy", port: TrafficMonitor.apiPort, testURL: testURL, timeoutMs: timeoutMs)
-            results[nodes[0].outboundJSON] = res
-            return
-        }
-
-        // 冷路径：组装临时配置，每个节点 tag = n{i} + clash_api（无入站）
+        // 临时实例测速：组装临时配置，每个节点 tag = n{i} + clash_api（无入站），与主内核无关。
+        // （不再走「运行中内核测当前节点」热路径：新模型下出站按节点 tag 命名、无单一 "proxy" 出站。
+        //  分组页整组测速另走运行中 clash_api 的 /proxies/{tag}/delay，见 ProxyGroupStore。）
         var outbounds: [[String: Any]] = []
         for (i, node) in nodes.enumerated() {
             guard let data = node.outboundJSON.data(using: .utf8),

@@ -38,24 +38,17 @@ final class ProxyGroupStore {
 
     /// 当前选中订阅的分组选择（makeConfig/groupOutbounds 与各处读取用）。
     var overrides: [String: String] { overridesBySub[subKey] ?? [:] }
-    private var subKey: String { SubscriptionStore.shared.selectedSubscriptionID?.uuidString ?? "default" }
+    private var subKey: String { SubscriptionStore.shared.selectedSubscription?.id.uuidString ?? "default" }
 
-    /// 原本是 url-test（自动）的组名（来自订阅 route.json）。手动固定后 clash_api 会把它报成 selector，
-    /// 靠这个集合才知道它「本可自动」，从而给出「恢复自动」。按订阅缓存，订阅变了才重算。
-    private(set) var autoGroups: Set<String> = []
-    private var autoGroupsSubID: UUID?
-
-    private func updateAutoGroupsIfNeeded() {
-        let sid = SubscriptionStore.shared.selectedSubscriptionID
-        guard sid != autoGroupsSubID else { return }
-        autoGroupsSubID = sid
-        guard let sub = SubscriptionStore.shared.selectedSubscription,
-              let r = ClashRuleImport.importedRoute(dir: SubscriptionStore.subrulesDir(sub.id)) else { autoGroups = []; return }
-        autoGroups = Set(r.groups.compactMap { ($0["type"] as? String) == "urltest" ? $0["tag"] as? String : nil })
+    /// 当前订阅的主选择器组名：机场自带分组 → 其 MATCH 去向组；否则合成的 "Proxy"。
+    /// url-test 永远只读自动，要钉节点请切其父 selector（合成模式下即 Proxy）。
+    var masterGroupName: String {
+        guard SettingsStore.shared.importSubscriptionRules,
+              let sub = SubscriptionStore.shared.selectedSubscription,
+              let r = ClashRuleImport.importedRoute(dir: SubscriptionStore.subrulesDir(sub.id)),
+              !r.groups.isEmpty else { return ProxyTopology.masterTag }
+        return r.final ?? (r.groups.first?["tag"] as? String) ?? ProxyTopology.masterTag
     }
-
-    /// 某组是否「被手动固定的自动组」（可恢复自动）。
-    func isPinnedAuto(_ name: String) -> Bool { autoGroups.contains(name) && overrides[name] != nil }
 
     private init() { loadOverrides() }
 
@@ -73,10 +66,6 @@ final class ProxyGroupStore {
         saveOverrides()
     }
 
-    private func clearOverride(_ group: String) {
-        overridesBySub[subKey]?[group] = nil
-        saveOverrides()
-    }
 
     private func saveOverrides() {
         try? FileManager.default.createDirectory(at: KernelPaths.supportDir, withIntermediateDirectories: true)
@@ -101,7 +90,6 @@ final class ProxyGroupStore {
     // MARK: 拉取
 
     func refresh() async {
-        updateAutoGroupsIfNeeded()
         guard KernelRunner.shared.isRunning else {
             loadPersisted()   // 内核没跑：展示订阅持久化的分组结构（无延迟、不可切换）
             return
@@ -131,25 +119,23 @@ final class ProxyGroupStore {
         if next != groups { groups = next }
     }
 
-    /// 离线加载：从「选中订阅」已转换落盘的 proxy-groups（subrules/<id>/route.json）构建分组结构。
-    /// 复用 KernelRunner 的 nodeOutbounds/groupOutbounds（与 makeConfig 同一套），保证成员名与运行态一致。
+    /// 离线加载：从「选中订阅」的节点 + 自带 proxy-groups（或合成的 Proxy/Auto）构建分组结构。
+    /// 用 ProxyTopology（与 makeConfig 同一套），保证成员名、主选择器与运行态一致。
     func loadPersisted() {
-        guard let sub = SubscriptionStore.shared.selectedSubscription, !sub.nodes.isEmpty,
-              let r = ClashRuleImport.importedRoute(dir: SubscriptionStore.subrulesDir(sub.id)),
-              !r.groups.isEmpty else {
+        guard let sub = SubscriptionStore.shared.selectedSubscription, !sub.nodes.isEmpty else {
             if !groups.isEmpty { groups = [] }
             live = false; loaded = true
             return
         }
-        let (nodeOuts, nameToTag) = KernelRunner.nodeOutbounds(sub.nodes)
-        let nodeTags = nodeOuts.compactMap { $0["tag"] as? String }
-        // 节点 tag → 协议类型（离线时给成员标协议）
-        var protoByTag: [String: String] = [:]
-        for o in nodeOuts {
-            if let t = o["tag"] as? String, let p = (o["type"] as? String)?.lowercased() { protoByTag[t] = p }
-        }
-        let groupOuts = KernelRunner.groupOutbounds(r.groups, allNodeTags: nodeTags, nameToTag: nameToTag, overrides: overrides)
-        let parsed = Self.parsePersisted(groupOuts, protoByTag: protoByTag)
+        let imported = SettingsStore.shared.importSubscriptionRules
+            ? ClashRuleImport.importedRoute(dir: SubscriptionStore.subrulesDir(sub.id)) : nil
+        let hasAirportGroups = !(imported?.groups.isEmpty ?? true)
+        let topo = ProxyTopology.build(
+            nodes: sub.nodes,
+            importedGroups: hasAirportGroups ? imported!.groups : [],
+            importedFinal: hasAirportGroups ? imported!.final : nil,
+            overrides: overrides)
+        let parsed = Self.parsePersisted(topo.groupOutbounds, protoByTag: topo.protoByTag)
         if parsed != groups { groups = parsed }
         live = false; loaded = true
     }
@@ -228,26 +214,16 @@ final class ProxyGroupStore {
 
     // MARK: 切换 selector
 
+    /// 手动切换 selector 成员。url-test 只读自动（sing-box / clash_api 不支持手动切），直接忽略。
+    /// 要钉住自动组里的某节点，请切其父 selector（合成模式下即 Proxy，成员含 Auto + 全部节点）。
     func select(_ group: Group, _ member: String) async {
+        guard group.kind == .selector else { return }
         guard group.now != member else { return }
         setOverride(group.name, member)                          // 持久化选择（离线也记住，配置生成时作 selector default）
         if let i = groups.firstIndex(where: { $0.id == group.id }) {
             groups[i].now = member                               // 立即反映
         }
-        if group.kind == .selector {
-            if live { _ = await Self.put(port: port, group: group.name, name: member) }   // selector：运行时即时切，无需重启
-        } else {
-            // url-test：sing-box 不支持手动切 → 持久化选择后重启，makeConfig 会把该组退化成 selector 固定此节点
-            await KernelRunner.shared.restartIfConfigChanged()
-        }
-        await refresh()
-    }
-
-    /// 把某个被手动固定的自动组恢复为「按延迟自动选择」：清掉持久化选择并重启应用。
-    func resetToAuto(_ group: Group) async {
-        guard overrides[group.name] != nil else { return }
-        clearOverride(group.name)
-        await KernelRunner.shared.restartIfConfigChanged()
+        if live { _ = await Self.put(port: port, group: group.name, name: member) }   // 运行时即时切，无需重启
         await refresh()
     }
 
@@ -294,7 +270,7 @@ final class ProxyGroupStore {
     /// 冷路径（独立临时 sing-box 实例测、与主内核无关），完成后把延迟写回成员。
     private func testGroupOffline(_ group: Group) async {
         guard let sub = SubscriptionStore.shared.selectedSubscription, !sub.nodes.isEmpty else { return }
-        let tagToNode = Self.tagToNodeMap(sub.nodes)
+        let tagToNode = ProxyTopology.tagToNodeMap(sub.nodes)
         // 真实节点成员（非嵌套组）才能直接测；保留 tag→node 以便写回。
         let pairs = group.members.compactMap { m -> (tag: String, node: ProxyNode)? in
             guard !m.isGroup, let n = tagToNode[m.name] else { return nil }
@@ -311,23 +287,6 @@ final class ProxyGroupStore {
             default: break
             }
         }
-    }
-
-    /// 重建「成员 tag → 节点」映射，与 KernelRunner.nodeOutbounds 的取 tag/去重逻辑完全一致，
-    /// 保证离线成员名能对回正确的节点。
-    nonisolated private static func tagToNodeMap(_ nodes: [ProxyNode]) -> [String: ProxyNode] {
-        var map: [String: ProxyNode] = [:]
-        var used = Set<String>()
-        for node in nodes {
-            guard let data = node.outboundJSON.data(using: .utf8),
-                  (try? JSONSerialization.jsonObject(with: data)) != nil else { continue }
-            let base = node.label.isEmpty ? "node" : node.label
-            var tag = base, i = 2
-            while used.contains(tag) { tag = "\(base) \(i)"; i += 1 }
-            used.insert(tag)
-            map[tag] = node
-        }
-        return map
     }
 
     /// 连测 3 次取最小（与单节点/离线一致）：首发常含冷启动握手，取最小更接近真实延迟。超时即止。

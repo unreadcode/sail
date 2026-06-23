@@ -187,7 +187,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         // url-test 组只读高亮。无分组时回退到扁平的「切换节点」列表。
         // 后台刷新一次，保证下次打开托盘的分组/选择是最新的（窗口可见时已在轮询）。
         Task { await ProxyGroupStore.shared.refresh() }
-        let store = SubscriptionStore.shared
         let groups = ProxyGroupStore.shared.groups
         if !groups.isEmpty {
             // 顶层只放一个「分组」二级菜单，展开才是各分组；再展开是组内成员（三级），避免菜单被一堆分组刷满
@@ -218,22 +217,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
             groupsRoot.submenu = groupsMenu
             menu.addItem(groupsRoot)
         } else {
-            let nodeHeader = NSMenuItem(title: "节点：\(store.selectedNode?.label ?? "未选择")", action: nil, keyEquivalent: "")
-            nodeHeader.isEnabled = false
-            menu.addItem(nodeHeader)
-            if let sub = store.selectedSubscription, !sub.nodes.isEmpty {
-                let switchItem = NSMenuItem(title: "切换节点", action: nil, keyEquivalent: "")
-                let submenu = NSMenu()
-                for node in sub.nodes {
-                    let ni = NSMenuItem(title: node.label, action: #selector(selectNodeFromTray(_:)), keyEquivalent: "")
-                    ni.target = self
-                    ni.representedObject = node.outboundJSON
-                    ni.state = store.isSelected(node) ? .on : .off
-                    submenu.addItem(ni)
-                }
-                switchItem.submenu = submenu
-                menu.addItem(switchItem)
-            }
+            let note = NSMenuItem(title: "暂无分组（先到「订阅」添加）", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            menu.addItem(note)
         }
         menu.addItem(.separator())
 
@@ -300,16 +286,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     @objc private func quitApp() { NSApp.terminate(nil) }
-
-    @objc private func selectNodeFromTray(_ sender: NSMenuItem) {
-        guard let json = sender.representedObject as? String else { return }
-        Task { @MainActor in
-            let store = SubscriptionStore.shared
-            if let node = store.allNodes.first(where: { $0.outboundJSON == json }) {
-                await store.selectNode(node)
-            }
-        }
-    }
 
     @objc private func selectGroupMemberFromTray(_ sender: NSMenuItem) {
         guard let info = sender.representedObject as? [String: String],

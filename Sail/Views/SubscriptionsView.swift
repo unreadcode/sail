@@ -23,7 +23,7 @@ struct SubscriptionsView: View {
                             ForEach(Array(store.subscriptions.enumerated()), id: \.element.id) { index, sub in
                                 SubscriptionCard(
                                     sub: sub,
-                                    // 含当前选中节点的订阅即视为选中：节点被选中时其所属订阅自动高亮（即使未显式选订阅）
+                                    // 当前订阅高亮：显式选中的；未显式选择时回退到第一个订阅（见 selectedSubscription）
                                     selected: store.selectedSubscription?.id == sub.id,
                                     index: index,
                                     onEdit: { editSub = sub },
