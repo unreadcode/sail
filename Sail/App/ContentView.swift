@@ -86,23 +86,34 @@ struct ContentView: View {
 /// 详情容器：套上原生标题栏（标题 + 副标题）后分发到各页面
 private struct DetailContainer: View {
     let item: NavItem
+    @State private var windowState = WindowState.shared
 
     var body: some View {
         Group {
-            switch item {
-            case .overview: OverviewView()
-            case .subscriptions: SubscriptionsView()
-            case .groups: GroupsView()
-            case .rules: RulesView()
-            case .connections: ConnectionsView()
-            case .traffic: TrafficView()
-            case .logs: LogsView()
-            case .settings: SettingsView()
+            if windowState.contentVisible {
+                page
+            } else {
+                // 收托盘后卸载页面：等价于用户切走 tab，销毁概览等页 → 停每秒重绘 / 轮询、
+                // 释放离屏渲染图层，挂机 RSS 不再走高。唤出主窗自然重建。
+                Color.clear
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(item.title)
         .navigationSubtitle(item.subtitle)
+    }
+
+    @ViewBuilder private var page: some View {
+        switch item {
+        case .overview: OverviewView()
+        case .subscriptions: SubscriptionsView()
+        case .groups: GroupsView()
+        case .rules: RulesView()
+        case .connections: ConnectionsView()
+        case .traffic: TrafficView()
+        case .logs: LogsView()
+        case .settings: SettingsView()
+        }
     }
 }
 

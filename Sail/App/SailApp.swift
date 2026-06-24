@@ -93,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                                                name: NSWindow.didBecomeMainNotification, object: nil)
 
         let silent = SettingsStore.shared.silentStart
+        WindowState.shared.contentVisible = !silent   // 静默启动：内容不渲染（窗口本就 orderOut）
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             mainWindow = NSApp.windows.first { $0.canBecomeMain }
@@ -298,6 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     @objc private func showMainWindow() {
+        MainActor.assumeIsolated { WindowState.shared.contentVisible = true }   // 唤出 → 重建内容
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         let window = mainWindow ?? NSApp.windows.first { $0.canBecomeMain }
@@ -313,8 +315,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         // （「叉掉窗口后托盘也没了」的根因）。canBecomeMain 可滤出真正的内容窗口。
         NSApp.windows.filter(\.canBecomeMain).forEach { $0.orderOut(nil) }
         NSApp.setActivationPolicy(.accessory)   // 同时隐藏 Dock 图标
-        // 收托盘后把 malloc 在浏览高峰时申请、释放后仍留存的空闲页还给系统，
-        // 避免 RSS 长期卡在高水位。延后一拍，等 orderOut + SwiftUI 释放离屏绘制资源后再回收。
+        // 卸载主窗内容：销毁概览等页 → 停每秒重绘 / 轮询、释放离屏渲染图层（核心，治本）。
+        MainActor.assumeIsolated { WindowState.shared.contentVisible = false }
+        // 再把 malloc 释放后仍留存的空闲页还给系统，避免 RSS 卡在高水位。
+        // 延后一拍，等 SwiftUI 完成内容销毁、释放离屏绘制资源后再回收。
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             malloc_zone_pressure_relief(nil, 0)
         }
