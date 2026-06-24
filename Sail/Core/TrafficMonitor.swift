@@ -138,6 +138,12 @@ final class TrafficMonitor {
     /// 维度桶超过 statTrimAt 即裁到 statKeepN（按总量留大头）。带滞后，避免每帧都排序。
     private func capStats() {
         Self.cap(&byDomain); Self.cap(&byProcess); Self.cap(&byNetwork); Self.cap(&byChain)
+        // processPaths 仅供 byProcess 的「应用」维度取图标，键是 byProcess 键的子集（两者在 accumulate 同写）。
+        // byProcess 被裁后跟着剪掉已淘汰键，避免它成为唯一不收敛的桶。count 比较即「byProcess 刚被裁」的代理：
+        // 未裁时 processPaths.count ≤ byProcess.count，guard 不成立、不做 O(n) filter。
+        if processPaths.count > byProcess.count {
+            processPaths = processPaths.filter { byProcess[$0.key] != nil }
+        }
     }
     private static func cap(_ d: inout [String: Usage]) {
         guard d.count > statTrimAt else { return }
