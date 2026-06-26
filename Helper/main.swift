@@ -7,7 +7,7 @@
 import Foundation
 import os
 
-let kHelperVersion = "4"   // helper 自身版本：改 helper 行为时 +1，app 据此判旧并自动重装
+let kHelperVersion = "5"   // helper 自身版本：改 helper 行为时 +1，app 据此判旧并自动重装（5：fd CLOEXEC + storePID 时序）
 let kSocketPath = "/var/run/com.unreadcode.Sail.helper.sock"
 let kSupportDir = "/Library/Application Support/Sail"
 let kSingBoxPath = kSupportDir + "/sing-box"      // root 所有的可信副本
@@ -130,6 +130,10 @@ func startSingBox(_ configJSON: String) -> (Bool, String) {
     var fds: [Int32] = [0, 0]
     guard pipe(&fds) == 0 else { return (false, "建管道失败") }
     let readFD = fds[0], writeFD = fds[1]
+    // 管道两端标 CLOEXEC：file_actions 已在本次子进程里 dup 到 1/2 后关掉它们（dup 后的 1/2 不带 CLOEXEC，日志照常），
+    // 这里再防「后续/并发 spawn 误继承旧管道 fd」。
+    fcntl(readFD, F_SETFD, FD_CLOEXEC)
+    fcntl(writeFD, F_SETFD, FD_CLOEXEC)
 
     LogWriter.shared.reset()   // 每次启动开一份全新日志
 
@@ -146,9 +150,11 @@ func startSingBox(_ configJSON: String) -> (Bool, String) {
         [strdup(kSingBoxPath), strdup("run"), strdup("-c"), strdup(kConfigPath), nil]
     defer { for p in argv where p != nil { free(p) } }
     let rc = posix_spawn(&pid, kSingBoxPath, &fa, nil, argv, environ)
+    // 紧跟 spawn 成功立刻记录 pid（在 close(writeFD) 之前），把「子进程已在跑但 helper 仍以为 pid=0」的窗口压到最小：
+    // 该窗口内若看门狗判属主离线触发 stopSingBox，会因 loadPID()==0 直接返回、漏杀这刚起的 root 内核成孤儿。
+    if rc == 0 { storePID(pid) }
     close(writeFD)   // 父进程必须关掉写端，否则子进程退出后读端永远等不到 EOF
     guard rc == 0 else { close(readFD); return (false, "spawn 失败(\(rc))") }
-    storePID(pid)
 
     // 排空线程：读管道 → 写日志。子进程关闭写端(退出) → read 返回 0(EOF) → 线程结束。
     Thread.detachNewThread {
@@ -210,6 +216,7 @@ signal(SIGPIPE, SIG_IGN)
 unlink(kSocketPath)
 let listenFD = socket(AF_UNIX, SOCK_STREAM, 0)
 guard listenFD >= 0 else { elog("socket() 失败"); exit(1) }
+fcntl(listenFD, F_SETFD, FD_CLOEXEC)   // 别让 posix_spawn 起的 root 内核继承这个特权监听 socket
 
 var addr = sockaddr_un()
 addr.sun_family = sa_family_t(AF_UNIX)
@@ -260,6 +267,7 @@ while true {
     let conn = accept(listenFD, nil, nil)
     if conn < 0 { continue }
     defer { close(conn) }   // 任何分支退出本次迭代都关闭连接 FD，杜绝泄露
+    fcntl(conn, F_SETFD, FD_CLOEXEC)   // 处理 start 命令时起的内核不应继承这条客户端连接
     // 复核调用方 uid（socket 0600 已限到该用户，这里再核一道）
     var uid: uid_t = 0, gid: gid_t = 0
     guard getpeereid(conn, &uid, &gid) == 0, uid == allowedUID else {
