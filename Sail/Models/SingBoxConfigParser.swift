@@ -35,9 +35,12 @@ enum SingBoxConfigParser {
     }
 
     nonisolated private static func portValue(_ v: Any?) -> Int {
-        if let i = v as? Int { return i }
-        if let s = v as? String { return Int(s) ?? 0 }
-        if let d = v as? Double { return Int(d) }
+        // 端口是 uint16；范围外取 0（由 server_port>0 守卫丢弃该节点，好过让畸形端口把整份配置喂崩内核）。
+        if let i = v as? Int { return (0...65535).contains(i) ? i : 0 }
+        if let s = v as? String { return Int(s).map { (0...65535).contains($0) ? $0 : 0 } ?? 0 }
+        // Int(Double) 对超出 Int 范围的值是不可捕获的 fatalError：恶意/畸形订阅里 "server_port": 1e20
+        // （JSONSerialization 解析为 Double，as? Int 失配落到这里）会直接崩掉整个 app。先做有限性+范围校验。
+        if let d = v as? Double { return d.isFinite && d >= 0 && d <= Double(UInt16.max) ? Int(d) : 0 }
         return 0
     }
 }
