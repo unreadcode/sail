@@ -76,11 +76,21 @@ enum SailHelperClient {
 
         guard var data = try? JSONSerialization.data(withJSONObject: obj) else { return nil }
         data.append(0x0A)   // 换行结尾，helper 按行读
-        let wrote = data.withUnsafeBytes { raw -> Int in
-            guard let base = raw.baseAddress else { return -1 }
-            return write(fd, base, raw.count)
+        // 循环写满：UDS SOCK_STREAM 的单次 write 不保证写全。startKernel 把整份 config JSON 塞进来，
+        // 大机场订阅（几百节点）可达数十~上百 KB，发送缓冲一满就短写 → 旧代码 wrote != count 直接判失败
+        // → TUN 静默起不来。这里按偏移循环写完，被信号打断(EINTR)重试，超时/出错(EAGAIN 等)才失败。
+        let ok = data.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return false }
+            var off = 0
+            while off < raw.count {
+                let n = write(fd, base + off, raw.count - off)
+                if n > 0 { off += n; continue }
+                if n < 0 && errno == EINTR { continue }
+                return false
+            }
+            return true
         }
-        guard wrote == data.count else { return nil }
+        guard ok else { return nil }
 
         // 读一行响应（响应很小，4KB 足够）
         var buf = [UInt8](repeating: 0, count: 4096)
