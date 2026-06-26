@@ -7,7 +7,7 @@
 import Foundation
 import os
 
-let kHelperVersion = "5"   // helper 自身版本：改 helper 行为时 +1，app 据此判旧并自动重装（5：fd CLOEXEC + storePID 时序）
+let kHelperVersion = "6"   // helper 自身版本：改 helper 行为时 +1，app 据此判旧并自动重装（6：stop 兜底扫掉 root 内核孤儿）
 let kSocketPath = "/var/run/com.unreadcode.Sail.helper.sock"
 let kSupportDir = "/Library/Application Support/Sail"
 let kSingBoxPath = kSupportDir + "/sing-box"      // root 所有的可信副本
@@ -99,17 +99,46 @@ func reapIfExited() {
     if waitpid(pid, &status, WNOHANG) == pid { clearPID(ifEqual: pid) }
 }
 
-/// 停内核：读 pid（瞬时持锁）→ kill + 等待退出（全程不持锁）→ 清 pid（瞬时持锁）。
+/// 兜底清理：扫掉所有正在运行 root 内核二进制(kSingBoxPath)的进程——含 helper 重装/重启/崩溃后被甩成孤儿、
+/// pid 已不被本进程跟踪的那个（升级时 launchctl bootout 旧 helper，其起的 root 内核就会变孤儿继续占 7890，
+/// 而新 helper loadPID()=0、pid-based stopSingBox 根本碰不到它 → 关 TUN 时用户态内核撞 7890 反复重启）。
+/// 按可执行路径**全等**匹配，绝不误伤用户态内核（其路径带 /Users 前缀，不等于 kSingBoxPath）。
+/// kill(p,0) 探活兼容「目标不是本进程子进程（孤儿）→ waitpid 无效」的情况。
+func sweepStrayRootKernels() {
+    let needed = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
+    guard needed > 0 else { return }
+    let cap = Int(needed) / MemoryLayout<pid_t>.stride + 16
+    var pids = [pid_t](repeating: 0, count: cap)
+    let got = proc_listpids(UInt32(PROC_ALL_PIDS), 0, &pids, Int32(cap * MemoryLayout<pid_t>.stride))
+    guard got > 0 else { return }
+    let count = Int(got) / MemoryLayout<pid_t>.stride
+    var pathBuf = [CChar](repeating: 0, count: 4096)   // = PROC_PIDPATHINFO_MAXSIZE(4*MAXPATHLEN)，该常量未导出到 Swift，用字面量
+    for i in 0..<count {
+        let p = pids[i]
+        guard p > 0 else { continue }
+        guard proc_pidpath(p, &pathBuf, UInt32(pathBuf.count)) > 0 else { continue }
+        guard String(cString: pathBuf) == kSingBoxPath else { continue }
+        kill(p, SIGTERM)
+        var alive = true
+        for _ in 0..<10 { if kill(p, 0) != 0 { alive = false; break }; usleep(100_000) }  // kill(p,0)!=0 → 已退出
+        if alive { kill(p, SIGKILL) }
+        var st: Int32 = 0; waitpid(p, &st, WNOHANG)   // 若恰是本进程子进程，顺手 reap 掉僵尸
+    }
+}
+
+/// 停内核：先停跟踪到的 pid（SIGTERM 优雅退出，保 TUN 路由正常拆除），再兜底扫掉任何未跟踪的 root 内核孤儿。
 /// 阻塞的等待循环不在锁内，故不会卡住看门狗或其它命令。
 func stopSingBox() {
     let pid = loadPID()
-    guard pid > 0 else { return }
-    kill(pid, SIGTERM)
-    var status: Int32 = 0
-    var exited = false
-    for _ in 0..<30 { if waitpid(pid, &status, WNOHANG) == pid { exited = true; break }; usleep(100_000) }
-    if !exited { kill(pid, SIGKILL); waitpid(pid, &status, 0) }
-    clearPID(ifEqual: pid)
+    if pid > 0 {
+        kill(pid, SIGTERM)
+        var status: Int32 = 0
+        var exited = false
+        for _ in 0..<30 { if waitpid(pid, &status, WNOHANG) == pid { exited = true; break }; usleep(100_000) }
+        if !exited { kill(pid, SIGKILL); waitpid(pid, &status, 0) }
+        clearPID(ifEqual: pid)
+    }
+    sweepStrayRootKernels()   // 兜底：pid 跟踪不到的孤儿（helper 重装/重启遗留）也清掉，否则它一直占 7890
 }
 
 func startSingBox(_ configJSON: String) -> (Bool, String) {
