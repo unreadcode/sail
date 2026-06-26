@@ -15,6 +15,19 @@ final class IPInfo {
 
     private init() {}
 
+    private var scheduledTask: Task<Void, Never>?
+
+    /// 开关系统代理 / TUN 之后延迟刷新一次（默认 5s，给内核与网络就绪时间）。
+    /// 重复调用只保留最后一次：快速连续开关时不堆叠，只在最后一次操作后 5s 刷。
+    func scheduleRefresh(after seconds: Double = 5) {
+        scheduledTask?.cancel()
+        scheduledTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard let self, !Task.isCancelled else { return }
+            await self.refresh()
+        }
+    }
+
     func refresh() async {
         guard !loading else { return }
         loading = true

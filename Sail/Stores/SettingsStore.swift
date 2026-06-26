@@ -173,6 +173,7 @@ final class SettingsStore {
         } else {
             await runner.start()   // 内核应常驻；若没在跑则拉起，start() 会按当前开关接管
         }
+        IPInfo.shared.scheduleRefresh()   // 出口 IP 可能变了，5s 后自动刷一次（仅此一处触发自动刷新）
     }
 
     /// 虚拟网卡(TUN)开关：与系统代理独立，可共存。增删 tun inbound 需重启内核生效。
@@ -183,6 +184,7 @@ final class SettingsStore {
         let runner = KernelRunner.shared
         if runner.isRunning { await runner.restart() }  // start() 会按需申请 TUN 权限
         else { await runner.start() }
+        IPInfo.shared.scheduleRefresh()   // 出口 IP 可能变了，5s 后自动刷一次
     }
 
     func setTUN(_ config: TUNConfig) {

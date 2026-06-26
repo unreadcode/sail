@@ -33,8 +33,8 @@ struct OverviewView: View {
             .animation(.smooth(duration: 0.45), value: appeared)
         }
         .scrollIndicators(.hidden)
-        .onAppear { appeared = true; Task { await ipInfo.refresh() } }
-        .onChange(of: runner.isRunning) { _, _ in Task { await ipInfo.refresh() } }
+        .onAppear { appeared = true }
+        // IP 信息不再每次进页/内核状态变化就自动刷新——只在开关系统代理/TUN 后延迟 5s 刷一次（见 SettingsStore），其余手动刷。
         .task {
             // 概览可见期间轮询代理分组（与分组页一致）；离开自动取消。
             while !Task.isCancelled {
