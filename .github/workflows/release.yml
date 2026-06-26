@@ -31,6 +31,22 @@ jobs:
       - name: 打包 DMG
         run: scripts/make-dmg.sh "$PWD/Sail.dmg"
 
+      # 从 CHANGELOG.md 提取当前 tag 版本的小节作为「更新内容」，写入 RELEASE_BODY.md（末尾以 --- 分隔）。
+      # app「设置 › 关于」只展示分隔线 --- 之前的「更新内容」；其后的 GitHub 自动变更日志不在 app 内显示。
+      - name: 生成 Release 说明
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          SECTION=""
+          if [ -f CHANGELOG.md ]; then
+            SECTION="$(awk -v h="## $VER" 'index($0,h)==1{f=1;next} /^## /&&f{exit} f{print}' CHANGELOG.md)"
+          fi
+          {
+            if [ -n "$SECTION" ]; then printf '%s\n\n' "$SECTION"; fi
+            echo '---'
+          } > RELEASE_BODY.md
+          [ -n "$SECTION" ] || echo "::warning::CHANGELOG.md 缺少 ## $VER 小节，本次 Release 无更新日志"
+          echo '----- RELEASE_BODY.md -----'; cat RELEASE_BODY.md
+
       - name: 发布到 Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
@@ -39,11 +55,6 @@ jobs:
           files: |
             Sail.dmg
             Sail.app.zip
+          # body_path 内容会被「拼在 GitHub 自动变更日志之前」
           generate_release_notes: true
-          # 下方安装提示会被「拼在自动变更日志之前」，简短即可；详细说明放 README
-          body: |
-            下载下方 `Sail.dmg`，拖入「应用程序」后首次打开执行一次：
-            ```bash
-            xattr -dr com.apple.quarantine /Applications/Sail.app
-            ```
-            详见 [安装说明](https://github.com/unreadcode/sail#安装)。
+          body_path: RELEASE_BODY.md

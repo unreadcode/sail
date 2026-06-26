@@ -49,7 +49,6 @@ enum NavItem: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @State private var selection: NavItem = .overview
     @State private var updater = AppUpdater.shared   // 观察「有新版本」，在侧栏 logo 上挂 NEW 角标
-    @State private var settingsTab: SettingsView.Tab = .general   // 设置页当前分区；点 NEW 角标时切到「关于」
 
     private let mainNav: [NavItem] = [.overview, .subscriptions, .groups, .rules, .connections, .traffic, .logs, .settings]
 
@@ -58,14 +57,11 @@ struct ContentView: View {
             List(selection: $selection) {
                 Section {
                     HStack(spacing: 10) {
-                        // 有新版本时整个 logo 变成可点按钮 → 跳「设置 › 关于」；否则普通展示。
+                        // 有新版本时整个 logo 变成可点按钮 → 打开更新窗口；否则普通展示。
                         if updater.updateAvailable {
-                            Button {
-                                settingsTab = .about
-                                selection = .settings
-                            } label: { brandLogo }
+                            Button { updater.showUpdateWindow() } label: { brandLogo }
                             .buttonStyle(.plain)
-                            .help(updater.latest.map { "有新版本 v\($0.version)，点击前往「设置 › 关于」更新" } ?? "有新版本可用，点击前往更新")
+                            .help(updater.latest.map { "有新版本 v\($0.version)，点击查看" } ?? "有新版本可用，点击查看")
                         } else {
                             brandLogo
                         }
@@ -86,7 +82,7 @@ struct ContentView: View {
             }
             .navigationSplitViewColumnWidth(200)   // 固定 200（最窄）：侧栏不可拖宽，展开时详情页挤压最小，避免重排卡顿
         } detail: {
-            DetailContainer(item: selection, settingsTab: $settingsTab)
+            DetailContainer(item: selection)
         }
     }
 
@@ -117,7 +113,6 @@ struct ContentView: View {
 /// 详情容器：套上原生标题栏（标题 + 副标题）后分发到各页面
 private struct DetailContainer: View {
     let item: NavItem
-    @Binding var settingsTab: SettingsView.Tab
     @State private var windowState = WindowState.shared
 
     var body: some View {
@@ -144,7 +139,7 @@ private struct DetailContainer: View {
         case .connections: ConnectionsView()
         case .traffic: TrafficView()
         case .logs: LogsView()
-        case .settings: SettingsView(tab: $settingsTab)
+        case .settings: SettingsView()
         }
     }
 }

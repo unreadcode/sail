@@ -18,6 +18,7 @@ final class AppUpdater {
         let pageURL: String     // release 页面
         let dmgURL: String?     // DMG 直链（给浏览器下载兜底）
         let zipURL: String?     // Sail.app.zip 直链（app 内自动更新用）
+        let notes: String?      // release body（更新日志，markdown）；展示给用户
     }
 
     private(set) var latest: Release?
@@ -34,8 +35,8 @@ final class AppUpdater {
     private(set) var totalBytes: Int64 = 0        // 总字节（响应未给时为 0）
     /// 用户已忽略的版本（本次运行内不再提示）。
     private var dismissedVersion: String?
-    /// 更新进度小窗。
-    private var progressWindow: NSWindow?
+    /// 更新独立窗口（更新日志 + 进度合一）。
+    private var updateWindow: NSWindow?
     private var downloader: ProgressDownloader?
     private var userCancelled = false
 
@@ -53,6 +54,18 @@ final class AppUpdater {
         return Self.compareVersions(latest.version, current) > 0
     }
 
+    /// 更新日志：release notes 截到首个单独成行的 `---`（其后是 GitHub 自动变更日志，不展示）。
+    var changelog: String? {
+        guard let body = latest?.notes else { return nil }
+        var lines: [Substring] = []
+        for line in body.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line == "---" { break }
+            lines.append(line)
+        }
+        let t = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
     func check() async {
         guard !checking else { return }
         checking = true
@@ -62,7 +75,7 @@ final class AppUpdater {
         catch { lastError = (error as? KernelError)?.description ?? error.localizedDescription }
     }
 
-    /// 一键下载并安装：弹小窗显示「下载进度 → 解压 → 即将重启」，完成后自动重启。无 zip 资产则退回浏览器。
+    /// 一键下载并安装：在更新窗口底部显示「下载进度 → 解压 → 即将重启」，完成后自动重启。无 zip 资产则退回浏览器。
     func downloadAndInstall() async {
         guard let latest else { return }
         guard let zipStr = latest.zipURL, let url = URL(string: zipStr) else {
@@ -71,7 +84,7 @@ final class AppUpdater {
         guard !installing else { return }
         installing = true; installError = nil; userCancelled = false
         installPhase = .downloading; downloadProgress = 0; downloadedBytes = 0; totalBytes = 0
-        presentProgressWindow()
+        showUpdateWindow()   // 幂等：窗口通常已由「查看更新 / NEW 角标」打开，进度就显示在它底部
         do {
             // 1) 下载（带进度回调，可取消）
             var req = URLRequest(url: url, timeoutInterval: 300)
@@ -93,29 +106,32 @@ final class AppUpdater {
             try? await Task.sleep(for: .milliseconds(500))   // 让小窗显示「即将重启」
             NSApp.terminate(nil)
         } catch {
-            // 用户取消 → 干净复位，不报错；其它错误 → 显示在「设置→关于」
+            // 取消 / 出错都退回更新日志页（底部恢复「取消 / 更新」），窗口不自动关；
+            // 出错时显示错误、按钮变「重试」。窗口仅由用户点「取消」或更新完成（重启）才关。
             if !userCancelled {
                 installError = (error as? KernelError)?.description ?? error.localizedDescription
             }
             downloader = nil
             userCancelled = false
             installing = false
-            closeProgressWindow()
         }
     }
 
-    /// 取消更新（仅下载阶段有效）：中断下载、关窗、复位。
+    /// 取消下载（仅下载阶段有效）：中断下载，退回更新日志页（窗口不关）。
     func cancelInstall() {
         guard canCancel else { return }
         userCancelled = true
         downloader?.cancel()
     }
 
-    // MARK: 进度小窗
+    // MARK: 更新独立窗口（更新日志 + 进度合一）
 
-    private func presentProgressWindow() {
-        guard progressWindow == nil else { return }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: 150),
+    /// 打开更新窗口：展示更新日志 + 取消/更新；点更新后底部就地显示进度。幂等。
+    /// 「设置 › 关于」「查看更新」与侧栏 NEW 角标都调它。
+    func showUpdateWindow() {
+        guard updateWindow == nil else { return }
+        installError = nil
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 360),
                          styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
@@ -123,20 +139,20 @@ final class AppUpdater {
         w.standardWindowButton(.closeButton)?.isHidden = true
         w.standardWindowButton(.miniaturizeButton)?.isHidden = true
         w.standardWindowButton(.zoomButton)?.isHidden = true
-        let host = NSHostingView(rootView: UpdateProgressView())
+        let host = NSHostingView(rootView: UpdateWindowView())
         w.contentView = host
         w.setContentSize(host.fittingSize)   // 按内容自适应高度
         w.center()
         w.level = .floating
-        NSApp.setActivationPolicy(.regular)   // 确保小窗可见（即便之前在托盘）
+        NSApp.setActivationPolicy(.regular)   // 确保窗口可见（即便之前在托盘）
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
-        progressWindow = w
+        updateWindow = w
     }
 
-    private func closeProgressWindow() {
-        progressWindow?.close()
-        progressWindow = nil
+    func closeUpdateWindow() {
+        updateWindow?.close()
+        updateWindow = nil
     }
 
     /// 打开下载：优先 DMG 直链，否则 release 页面。
@@ -161,12 +177,12 @@ final class AppUpdater {
             throw KernelError.message("检查更新失败（HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1)）")
         }
         struct Asset: Decodable { let name: String; let browser_download_url: String }
-        struct GHRelease: Decodable { let tag_name: String; let html_url: String; let assets: [Asset] }
+        struct GHRelease: Decodable { let tag_name: String; let html_url: String; let body: String?; let assets: [Asset] }
         let rel = try JSONDecoder().decode(GHRelease.self, from: data)
         let ver = rel.tag_name.hasPrefix("v") ? String(rel.tag_name.dropFirst()) : rel.tag_name
         let dmg = rel.assets.first { $0.name.lowercased().hasSuffix(".dmg") }?.browser_download_url
         let zip = rel.assets.first { $0.name.lowercased().hasSuffix(".zip") }?.browser_download_url
-        return Release(version: ver, pageURL: rel.html_url, dmgURL: dmg, zipURL: zip)
+        return Release(version: ver, pageURL: rel.html_url, dmgURL: dmg, zipURL: zip, notes: rel.body)
     }
 
     // MARK: - 解压 + 验签 + 布置换包助手（下载已单独完成）

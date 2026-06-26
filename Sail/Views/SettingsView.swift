@@ -3,7 +3,7 @@ import SwiftUI
 /// 设置页面：应用常规偏好（持久化到 SettingsStore）。顶部 Tab 切换分区，避免单页过长。
 struct SettingsView: View {
     @Environment(\.openURL) private var openURL
-    @Binding var tab: Tab   // 由 ContentView 持有：点侧栏 logo 的 NEW 角标可直接落到「关于」分区
+    @State private var tab: Tab = .general
 
     enum Tab: String, CaseIterable, Identifiable {
         case general, singBox, advanced, mixin, about
@@ -660,8 +660,8 @@ private struct AboutCard: View {
                 if let err = updater.installError {
                     Text(err).font(.caption).foregroundStyle(.red).lineLimit(1)
                 }
-                Button { Task { await updater.downloadAndInstall() } } label: {
-                    Label("更新到 v\(v)", systemImage: "arrow.down.circle.fill")
+                Button { updater.showUpdateWindow() } label: {
+                    Label("查看更新 v\(v)", systemImage: "sparkles")
                         .labelStyle(.titleAndIcon).fontWeight(.medium)
                 }
                 .buttonStyle(.borderedProminent).controlSize(.small)
@@ -678,5 +678,5 @@ private struct AboutCard: View {
 }
 
 #Preview {
-    SettingsView(tab: .constant(.general)).frame(width: 720, height: 600)
+    SettingsView().frame(width: 720, height: 600)
 }
