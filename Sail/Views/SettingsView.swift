@@ -6,7 +6,7 @@ struct SettingsView: View {
     @State private var tab: Tab = .general
 
     enum Tab: String, CaseIterable, Identifiable {
-        case general, singBox, advanced, mixin, kernel, about
+        case general, singBox, advanced, mixin, about
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -14,7 +14,6 @@ struct SettingsView: View {
             case .singBox: return "sing-box"
             case .advanced: return "高级"
             case .mixin: return "Mixin"
-            case .kernel: return "内核"
             case .about: return "关于"
             }
         }
@@ -24,7 +23,6 @@ struct SettingsView: View {
             case .singBox: return "shippingbox"
             case .advanced: return "slider.horizontal.3"
             case .mixin: return "curlybraces"
-            case .kernel: return "cpu"
             case .about: return "info.circle"
             }
         }
@@ -41,7 +39,6 @@ struct SettingsView: View {
                     case .singBox: SingBoxCard()
                     case .advanced: AdvancedCard()
                     case .mixin: MixinCard()
-                    case .kernel: KernelCard()
                     case .about: AboutCard()
                     }
                 }
@@ -558,103 +555,11 @@ private struct MixinCard: View {
     }
 }
 
-// MARK: - 内核管理
-
-private struct KernelCard: View {
-    private let runner = KernelRunner.shared
-    // 内核随 App 内置、随版本发布更新，不在 App 内联网下载。此处仅本地读取展示。
-    @State private var installed = false
-    @State private var version = ""   // 形如 v1.12.0；空表示未知（无法运行二进制）
-
-    var body: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 20) {
-                // 头部
-                HStack(spacing: 12) {
-                    Image(systemName: "shippingbox")
-                        .font(.system(size: 20))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 44, height: 44)
-                        .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("sing-box").font(.system(size: 17, weight: .semibold, design: .rounded))
-                        Text("代理内核").font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if installed {
-                        Button { Task { await runner.restart() } } label: {
-                            Image(systemName: "arrow.clockwise").font(.system(size: 12, weight: .semibold))
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(runner.isBusy)
-                        .help("重启内核")
-                    }
-                    statusPill
-                }
-
-                // 版本主展示
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(installed ? (version.isEmpty ? "—" : version) : "未安装")
-                        .font(.system(size: 24, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(installed ? .primary : .secondary)
-                    Text(installed ? "内核随 App 内置，更新随新版本发布" : "未检测到内核，请重新安装 App")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-
-                // 元信息
-                if installed {
-                    VStack(spacing: 8) {
-                        metaRow("安装路径", KernelPaths.binary.path)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color(nsColor: .quaternaryLabelColor).opacity(0.25),
-                                in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                }
-            }
-        }
-        .task { await probe() }
-    }
-
-    /// 本地探测内核：二进制是否就位 + 跑 `version` 取版本号。不触网。
-    private func probe() async {
-        let exists = FileManager.default.fileExists(atPath: KernelPaths.binary.path)
-        let v = exists ? await Task.detached { SystemInfo.kernelVersion() }.value : nil
-        installed = exists
-        version = v ?? ""
-    }
-
-    private var statusPill: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(installed ? Color.accentColor : Color.secondary)
-                .frame(width: 6, height: 6)
-            Text(installed ? "运行就绪" : "未安装")
-                .font(.caption.weight(.medium))
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(
-            Capsule().fill(installed ? Color.accentColor.opacity(0.12) : Color(nsColor: .quaternaryLabelColor).opacity(0.4))
-        )
-        .foregroundStyle(installed ? Color.accentColor : Color.secondary)
-    }
-
-    private func metaRow(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label).foregroundStyle(.secondary)
-            Spacer()
-            Text(value).font(.system(size: 12, design: .monospaced)).foregroundStyle(.primary.opacity(0.8))
-                .lineLimit(1).truncationMode(.middle)
-        }
-        .font(.caption)
-    }
-}
-
 // MARK: - 关于
 
 private struct AboutCard: View {
     @State private var updater = AppUpdater.shared
+    @State private var kernelVersion = ""   // 形如 v1.12.0；本地跑 `sing-box version` 取，不触网
 
     var body: some View {
         Card {
@@ -686,6 +591,16 @@ private struct AboutCard: View {
                         Text("作者").foregroundStyle(.secondary)
                         Spacer()
                         Text("Unreadcode").fontWeight(.medium)
+                    }
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    Divider().padding(.leading, 14)
+                    HStack {
+                        Text("内核版本").foregroundStyle(.secondary)
+                        Spacer()
+                        Text(kernelVersion.isEmpty ? "—" : kernelVersion)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(.primary.opacity(0.8))
                     }
                     .font(.system(size: 13))
                     .padding(.horizontal, 14).padding(.vertical, 10)
@@ -728,7 +643,11 @@ private struct AboutCard: View {
                 )
             }
         }
-        .task { if updater.latest == nil { await updater.check() } }
+        .task {
+            let v = await Task.detached { SystemInfo.kernelVersion() }.value
+            kernelVersion = v ?? "未安装"
+            if updater.latest == nil { await updater.check() }
+        }
     }
 
     @ViewBuilder private var updateStatus: some View {
