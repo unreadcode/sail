@@ -5,6 +5,7 @@ import AppKit
 struct LogsView: View {
     private let runner = KernelRunner.shared
     @State private var minLevel: LogLevel = .all
+    @State private var atBottom = true   // 是否贴在底部：贴底才自动跟随尾巴，用户上滚后停止（避免把人拽回底部）
 
     /// 日志级别过滤（最低级别：选中项及更高才显示）。
     enum LogLevel: Int, CaseIterable, Identifiable {
@@ -116,36 +117,76 @@ struct LogsView: View {
     // MARK: 日志列表（自动滚到底部）
 
     private var logScroll: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(filtered) { line in
-                        Text(ANSI.attributed(line.text))
-                            .font(.system(size: 11.5, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+        // 外层 GeometryReader 拿视口高度，喂给内层算「内容底边距视口底部的距离」→ 判断是否贴底。
+        GeometryReader { outer in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(filtered) { line in
+                            Text(ANSI.attributed(line.text))
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Color.clear.frame(height: 1).id("bottom")
                     }
-                    Color.clear.frame(height: 1).id("bottom")
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay {
-                    if filtered.isEmpty {
-                        Text("没有「\(minLevel.label)」级别的日志")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                            .padding(.top, 40)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        // 内容底边在视口坐标系的 Y 减视口高 = 距底部的距离（贴底≈0，上滚为正）
+                        GeometryReader { inner in
+                            Color.clear.preference(
+                                key: BottomDistanceKey.self,
+                                value: inner.frame(in: .named("logScroll")).maxY - outer.size.height
+                            )
+                        }
+                    )
+                    .overlay {
+                        if filtered.isEmpty {
+                            Text("没有「\(minLevel.label)」级别的日志")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                                .padding(.top, 40)
+                        }
                     }
                 }
-            }
-            .scrollIndicators(.hidden)
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.35))
-            // 监听最后一行的 id 而非行数：日志封顶后行数恒为 800 不变，但新行仍在进来，
-            // 用 last?.id 才能持续触底；切换过滤级别时 last 也会变，一并覆盖。
-            .onChange(of: filtered.last?.id) {
-                proxy.scrollTo("bottom", anchor: .bottom)
-            }
-            .onAppear {
-                proxy.scrollTo("bottom", anchor: .bottom)
+                .coordinateSpace(name: "logScroll")
+                .scrollIndicators(.hidden)
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.35))
+                .onPreferenceChange(BottomDistanceKey.self) { dist in
+                    // 容差 ~40pt（约两三行）：吸收追加新行时的瞬时抖动，只有真正上滚才停跟随。
+                    atBottom = dist < 40
+                }
+                // 监听最后一行的 id 而非行数：日志封顶后行数恒为 800 不变，但新行仍在进来，用 last?.id 才能持续触底。
+                // 仅当用户停在底部时才跟随；上滚查看历史时不打扰。
+                .onChange(of: filtered.last?.id) {
+                    if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+                // 切换过滤级别：视作重新看，跳到底部并恢复跟随。
+                .onChange(of: minLevel) {
+                    atBottom = true
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+                .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+                .overlay(alignment: .bottomTrailing) {
+                    if !atBottom {
+                        Button {
+                            atBottom = true
+                            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo("bottom", anchor: .bottom) }
+                        } label: {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 30, height: 30)
+                                .background(Color.accentColor, in: Circle())
+                                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+                        }
+                        .buttonStyle(.plain)
+                        .padding(14)
+                        .help("回到底部并继续跟随")
+                        .transition(.opacity.combined(with: .scale))
+                    }
+                }
+                .animation(.easeOut(duration: 0.15), value: atBottom)
             }
         }
     }
@@ -177,6 +218,12 @@ struct LogsView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
+}
+
+/// 日志内容底边距视口底部的距离（贴底≈0，上滚为正），用于判断是否仍跟随尾巴。
+private struct BottomDistanceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 /// 把含 ANSI SGR 转义序列的字符串解析为带前景色的 AttributedString。
