@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."   # 仓库根目录
 
-PINNED="1.13.13"   # ← 升级内核改这里
+PINNED="1.13.14"   # ← 升级内核改这里
 REPO="SagerNet/sing-box"
 VER="${1:-${KERNEL_VERSION:-$PINNED}}"
 VER="${VER#v}"     # 去掉前缀 v
