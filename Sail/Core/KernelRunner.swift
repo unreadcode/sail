@@ -144,7 +144,7 @@ final class KernelRunner {
         }
 
         let useHelper = SettingsStore.shared.tunEnabled && HelperManager.isInstalled
-        appendLogs(["[启动·串行化v1] 模式=\(useHelper ? "TUN(root)" : "用户态")  tunEnabled=\(SettingsStore.shared.tunEnabled)  auto=\(auto)  clashApi端口=\(TrafficMonitor.apiPort)"])
+        appendLogs(["[启动·bindprobe-v2] 模式=\(useHelper ? "TUN(root)" : "用户态")  tunEnabled=\(SettingsStore.shared.tunEnabled)  auto=\(auto)  clashApi端口=\(TrafficMonitor.apiPort)"])
 
         // 用户态启动前，确保 mixed 端口真正空出来再 spawn。关 TUN 是「停 root 内核 → 起用户态内核」，两者绑同一 7890。
         // 关键：单次 stopKernel 不可靠——TUN 优雅拆除慢 / helper 忙时它会在 root 内核真正退出前就返回甚至超时，
@@ -153,25 +153,29 @@ final class KernelRunner {
         // 直到空出或到上限（v6 helper 的 stop 会按可执行路径把跟踪不到的 root 孤儿也一并扫掉）。
         if !useHelper {
             let port = SettingsStore.shared.mixedPort
-            var guardN = 0
-            while guardN < 20 {
-                // 两路都停：stopKernel 停 root 内核（v6 helper 含按路径扫孤儿）；killStrayKernels 杀用户态残留
-                // （按用户态配置路径 pkill）——占着 7890 的可能是其中任一种，缺一就放不掉端口。
-                if HelperManager.isInstalled { _ = await SailHelperClient.stopKernel() }
-                await Task.detached(priority: .utility) { Self.killStrayKernels() }.value
-                guardN += 1
-                let stillBound = await Task.detached(priority: .utility, operation: { Self.portListening(port) }).value
-                if !stillBound { break }
+            let lan = SettingsStore.shared.allowLan
+            // 先停掉任何还占着 7890 的内核（root 经 helper 的 v6 sweep 按路径扫；用户态经 pkill）。
+            if HelperManager.isInstalled { _ = await SailHelperClient.stopKernel() }
+            await Task.detached(priority: .utility) { Self.killStrayKernels() }.value
+            // 再等 7890 真正「可 bind」才 spawn。根因(用户实测确认)：上个内核在 7890 上的连接被杀后进入 TIME_WAIT，
+            // sing-box mixed 入站没用上 SO_REUSEADDR，撞 TIME_WAIT 会 bind 失败；而 TIME_WAIT 没有 listener，
+            // 旧的 connect 探测(portListening)看不到它 → 误判端口空着、放内核去 bind → FATAL 反复重启。
+            // 改用 bind 探测(portBindable)这个 ground truth：bind 不上就静等（TIME_WAIT 最长 2×MSL≈30s 自然消解），
+            // 期间不 spawn、不刷 FATAL、不计崩溃（无内核时系统走直连，用户照常上网）。
+            var waited = 0
+            while waited < 140 {
+                if await Task.detached(priority: .utility, operation: { Self.portBindable(port, lan: lan) }).value { break }
                 if runState != .starting { return }
-                if guardN == 1 || guardN % 4 == 0 {
-                    appendLogs(["[启动] mixed 端口 \(port) 仍被占用，已催停第 \(guardN) 次，继续等待释放…"])
+                waited += 1
+                if waited == 1 || waited % 8 == 0 {
+                    appendLogs(["[启动] mixed 端口 \(port) 暂不可绑定（多为上个内核连接的 TIME_WAIT 残留，最长约 30s 自解），等待中…(\(waited))"])
                 }
                 try? await Task.sleep(for: .milliseconds(250))
             }
-            if await Task.detached(priority: .utility, operation: { Self.portListening(port) }).value {
-                appendLogs(["[启动] ⚠️ 等待 \(guardN) 轮后 mixed 端口 \(port) 仍被占用——大概率有别的进程占着它；本次启动可能失败。"])
-            } else if guardN > 1 {
-                appendLogs(["[启动] mixed 端口 \(port) 已释放（等了 \(guardN) 轮），继续启动内核。"])
+            if waited >= 140 {
+                appendLogs(["[启动] ⚠️ 等了 \(waited) 轮 mixed 端口 \(port) 仍不可绑定，仍尝试启动（可能失败）。"])
+            } else if waited > 0 {
+                appendLogs(["[启动] mixed 端口 \(port) 已可绑定（等了 \(waited) 轮），继续启动内核。"])
             }
         }
 
@@ -262,6 +266,25 @@ final class KernelRunner {
         let r = withUnsafePointer(to: &addr) { p in
             p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        return r == 0
+    }
+
+    /// 端口现在能否真正 bind（与 sing-box 同条件：不设 SO_REUSEADDR）。比 `portListening`(connect 探测) 更准——
+    /// 能检出 TIME_WAIT：处于 TIME_WAIT 的端口没有 listener（connect 探测不到），却会让 bind 失败。
+    /// listen 地址要和内核一致（allowLan→0.0.0.0，否则 127.0.0.1），否则 0.0.0.0 与 127.0.0.1 的占用判断会偏。
+    nonisolated private static func portBindable(_ port: Int, lan: Bool) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(UInt16(truncatingIfNeeded: port).bigEndian)
+        addr.sin_addr.s_addr = inet_addr(lan ? "0.0.0.0" : "127.0.0.1")
+        let r = withUnsafePointer(to: &addr) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         return r == 0
