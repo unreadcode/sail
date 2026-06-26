@@ -42,12 +42,22 @@ enum SystemProxy {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
         p.arguments = args
-        let pipe = Pipe()
-        p.standardOutput = pipe
-        p.standardError = Pipe()
-        do { try p.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let outPipe = Pipe(), errPipe = Pipe()
+        p.standardOutput = outPipe
+        p.standardError = errPipe
+        do { try p.run() } catch {
+            NSLog("%@", "[Sail] networksetup 无法启动(\(args.first ?? "")): \(error.localizedDescription)")
+            return nil
+        }
+        let out = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         p.waitUntilExit()
-        return String(data: data, encoding: .utf8)
+        // networksetup 失败（服务名不存在/权限/服务异常）返回非 0，错误以 "** Error:" 打到 stdout。
+        // 静默吞掉会让「以为设/撤了代理其实没生效」无从察觉——尤其 disable 失败会把用户留在指向死端口的黑洞里。
+        if p.terminationStatus != 0 {
+            let msg = ((out ?? "") + err).trimmingCharacters(in: .whitespacesAndNewlines)
+            NSLog("%@", "[Sail] networksetup 失败(\(p.terminationStatus)) args=\(args.joined(separator: " ")) msg=\(msg)")
+        }
+        return out
     }
 }
