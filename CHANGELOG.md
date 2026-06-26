@@ -4,6 +4,10 @@
 > 写本次更新内容；CI（`.github/workflows/release.yml`）按 tag 自动提取对应小节注入 GitHub Release，
 > App「设置 › 关于」在检测到新版本时展示这段内容。版本号与 `MARKETING_VERSION` 保持一致。
 
+## 1.1.17
+
+- 修复内核偶发异常退出（code 1）：关闭代理 / 切换开关时，clash_api 端口与上一内核实例残留的 TIME_WAIT 状态冲突（`address already in use`）。现改为每次启动选用新的空闲端口，并避开其它 Clash 客户端固定占用的 9090。
+
 ## 1.1.16
 
 - 内核改为随版本内置分发，移除 App 内联网下载/更新入口（发新版即更新内核）。
