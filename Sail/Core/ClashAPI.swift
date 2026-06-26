@@ -18,4 +18,29 @@ enum ClashAPI {
     nonisolated static func config(port: Int) -> [String: Any] {
         ["external_controller": "127.0.0.1:\(port)", "secret": secret]
     }
+
+    /// 向系统申请一个空闲 TCP 端口（bind 到 127.0.0.1:0 让内核分配后读回）；失败回退 19090。
+    /// close 到内核 bind 之间有极小 TOCTOU 窗口，但内核会立即占用——远胜固定端口：
+    /// 固定 9090 会与其它 Clash 系客户端（ClashX / Verge / Mihomo 默认的 external-controller）确定性相撞 → bind 失败 FATAL。
+    nonisolated static func freePort() -> Int {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return 19090 }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        addr.sin_port = 0
+        let bound = withUnsafePointer(to: &addr) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0 else { return 19090 }
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &addr) { p in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) }
+        }
+        guard named == 0 else { return 19090 }
+        return Int(UInt16(bigEndian: addr.sin_port))
+    }
 }

@@ -75,6 +75,10 @@ final class KernelRunner {
         runState = .starting
         logLines.removeAll()
 
+        // clash_api 每次启动换一个新的空闲端口：避免重绑上一内核刚优雅退出、仍处 TIME_WAIT 的端口
+        // （clash server 未设 SO_REUSEADDR → 重绑同端口 address already in use → FATAL），也顺带躲开别的 Clash 客户端的固定 9090。
+        TrafficMonitor.apiPort = ClashAPI.freePort()
+
         // 清理上次残留的孤儿内核：app 被强杀/崩溃时 terminationHandler 没跑到，
         // 旧 sing-box 仍占着 clash_api/本地端口，新内核会因端口冲突 code 1 退出。
         await Task.detached { Self.killStrayKernels() }.value
@@ -145,7 +149,7 @@ final class KernelRunner {
             }
 
             // 等 clash_api 真正就绪再转入 .running：内核 bind 端口需时间，过早置 running 会让各处
-            // 轮询（/traffic、/connections、/proxies）打向尚未监听的 9090，刷一屏 connection refused
+            // 轮询（/traffic、/connections、/proxies）打向尚未监听的 clash_api 端口，刷一屏 connection refused
             // ——尤其更新订阅触发 restart() 时最明显。期间保持 .starting（isRunning=false），轮询自然不发。
             await waitForClashAPIReady()
             guard runState == .starting else { return }   // 期间崩溃/被停 → 已置 stopped/stopping，放弃转 running

@@ -70,7 +70,7 @@ final class LatencyTester {
         }
         outbounds.append(["type": "direct", "tag": "direct"])
         // 每次申请一个空闲端口：固定端口会在连续测速（手动+自动）时与上一实例撞，导致 clash_api 起不来 → 全部误报超时。
-        let apiPort = Self.freePort()
+        let apiPort = ClashAPI.freePort()
         let config: [String: Any] = [
             "log": ["level": "error"],
             // 测速 URL 解析按配置策略（默认 ipv4_only）：否则可能解析到 AAAA、
@@ -128,30 +128,6 @@ final class LatencyTester {
 
     private func markTimeout(_ nodes: [ProxyNode]) {
         for node in nodes { results[node.outboundJSON] = .timeout }
-    }
-
-    /// 向系统申请一个空闲 TCP 端口（bind 到 0 让内核分配后读回）。
-    /// 失败则回退 19090。close 到内核 bind 之间有极小 TOCTOU 窗口，但临时内核会立即占用，远胜固定端口。
-    nonisolated private static func freePort() -> Int {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return 19090 }
-        defer { close(fd) }
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        addr.sin_port = 0
-        let bound = withUnsafePointer(to: &addr) { p in
-            p.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
-        guard bound == 0 else { return 19090 }
-        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-        let named = withUnsafeMutablePointer(to: &addr) { p in
-            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &len) }
-        }
-        guard named == 0 else { return 19090 }
-        return Int(UInt16(bigEndian: addr.sin_port))
     }
 
     // MARK: - clash_api 调用（后台）

@@ -7,7 +7,12 @@ import Observation
 @Observable
 final class TrafficMonitor {
     static let shared = TrafficMonitor()
-    static let apiPort = 9090
+    /// clash_api 端口：**每次内核启动都重挑**一个空闲端口（在 KernelRunner.start 里赋值）。
+    /// 既躲开其它 Clash 客户端固定的 9090，更关键的是避免重绑「上一内核刚优雅退出、仍处 TIME_WAIT」的端口——
+    /// clash server 没设 SO_REUSEADDR，重绑同端口会 `address already in use` → FATAL（典型：切开关触发 restart，
+    /// 而 TrafficMonitor 一直连着 9090，老连接进 TIME_WAIT，新内核抢不到）。
+    /// nonisolated(unsafe)：写只在内核启动（主线程）发生、读散落多处；单个对齐 Int，竞态无害（最坏读到旧值，下次轮询纠正）。
+    nonisolated(unsafe) static var apiPort = ClashAPI.freePort()
     static let historyLen = 48
 
     private(set) var up = 0.0          // 字节/秒
