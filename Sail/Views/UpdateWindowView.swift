@@ -26,7 +26,7 @@ struct UpdateWindowView: View {
 
             // 更新日志
             ScrollView {
-                Text(notesAttributed(updater.changelog ?? "本次更新暂无说明。"))
+                changelogBody(updater.changelog ?? "本次更新暂无说明。")
                     .font(.system(size: 12.5))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -88,9 +88,37 @@ struct UpdateWindowView: View {
         }
     }
 
-    /// inlineOnlyPreservingWhitespace：保留换行 + 解析行内 markdown（加粗/链接/代码），块级（标题/列表）保持原样仍可读。
-    private func notesAttributed(_ s: String) -> AttributedString {
-        (try? AttributedString(markdown: s,
-                               options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+    /// 按行渲染更新日志：`- `/`* `/`• ` 行 → 真正的圆点条目（悬挂缩进），其余按段落；每行仍解析行内 markdown
+    /// （加粗/斜体/代码/链接）。AttributedString 的 .full 不会给列表加圆点和换行，故按行自排版。
+    @ViewBuilder private func changelogBody(_ s: String) -> some View {
+        let lines = s.components(separatedBy: "\n")
+        VStack(alignment: .leading, spacing: 7) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, raw in
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.isEmpty {
+                    Color.clear.frame(height: 1)
+                } else if let item = bulletContent(line) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text("•").foregroundStyle(.secondary)
+                        Text(inlineMarkdown(item)).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else {
+                    Text(inlineMarkdown(line)).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+    }
+
+    /// 取出 `- `/`* `/`• ` 列表项正文；非列表行返回 nil。
+    private func bulletContent(_ line: String) -> String? {
+        for p in ["- ", "* ", "• "] where line.hasPrefix(p) {
+            return String(line.dropFirst(p.count))
+        }
+        return nil
+    }
+
+    /// 行内 markdown（加粗/斜体/代码/链接）。
+    private func inlineMarkdown(_ s: String) -> AttributedString {
+        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnly))) ?? AttributedString(s)
     }
 }
