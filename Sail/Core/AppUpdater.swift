@@ -133,6 +133,11 @@ final class AppUpdater {
         installError = nil
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 360),
                          styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        // 程序化创建的 NSWindow 默认 isReleasedWhenClosed=true：close() 会让 AppKit 再 release 一次窗口，
+        // 与 ARC 持有的 updateWindow 叠加成过度释放 → 窗口提前 dealloc，下个 autorelease pool 排空时
+        // objc_release 命中野指针崩溃（崩溃栈停在 NSApplication run 的 pool drain，与此处无直接调用关系，极隐蔽）。
+        // 关掉它，窗口生命周期完全交给 ARC（closeUpdateWindow 里 close() + updateWindow=nil 即可干净释放）。
+        w.isReleasedWhenClosed = false
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
         w.isMovableByWindowBackground = true
