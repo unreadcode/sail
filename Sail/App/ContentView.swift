@@ -48,6 +48,8 @@ enum NavItem: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @State private var selection: NavItem = .overview
+    @State private var updater = AppUpdater.shared   // 观察「有新版本」，在侧栏 logo 上挂 NEW 角标
+    @State private var settingsTab: SettingsView.Tab = .general   // 设置页当前分区；点 NEW 角标时切到「关于」
 
     private let mainNav: [NavItem] = [.overview, .subscriptions, .groups, .rules, .connections, .traffic, .logs, .settings]
 
@@ -56,11 +58,17 @@ struct ContentView: View {
             List(selection: $selection) {
                 Section {
                     HStack(spacing: 10) {
-                        Image("AppLogo")
-                            .resizable()
-                            .interpolation(.high)
-                            .frame(width: 30, height: 30)
-                            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        // 有新版本时整个 logo 变成可点按钮 → 跳「设置 › 关于」；否则普通展示。
+                        if updater.updateAvailable {
+                            Button {
+                                settingsTab = .about
+                                selection = .settings
+                            } label: { brandLogo }
+                            .buttonStyle(.plain)
+                            .help(updater.latest.map { "有新版本 v\($0.version)，点击前往「设置 › 关于」更新" } ?? "有新版本可用，点击前往更新")
+                        } else {
+                            brandLogo
+                        }
                         Text("Sail")
                             .font(.system(size: 17, weight: .semibold, design: .rounded))
                     }
@@ -78,14 +86,38 @@ struct ContentView: View {
             }
             .navigationSplitViewColumnWidth(200)   // 固定 200（最窄）：侧栏不可拖宽，展开时详情页挤压最小，避免重排卡顿
         } detail: {
-            DetailContainer(item: selection)
+            DetailContainer(item: selection, settingsTab: $settingsTab)
         }
+    }
+
+    /// 侧栏品牌 logo；有新版本时右上角挂 NEW 角标（overlay 在 clipShape 之后，不被圆角裁掉）。
+    private var brandLogo: some View {
+        Image("AppLogo")
+            .resizable()
+            .interpolation(.high)
+            .frame(width: 30, height: 30)
+            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(alignment: .topTrailing) {
+                if updater.updateAvailable {
+                    Text("NEW")
+                        .font(.system(size: 7, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .background(Color.red, in: Capsule())
+                        // 描边用窗口背景色，让角标从 logo 边缘跳出来
+                        .overlay(Capsule().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1))
+                        .fixedSize()
+                        .offset(x: 6, y: -4)
+                }
+            }
     }
 }
 
 /// 详情容器：套上原生标题栏（标题 + 副标题）后分发到各页面
 private struct DetailContainer: View {
     let item: NavItem
+    @Binding var settingsTab: SettingsView.Tab
     @State private var windowState = WindowState.shared
 
     var body: some View {
@@ -112,7 +144,7 @@ private struct DetailContainer: View {
         case .connections: ConnectionsView()
         case .traffic: TrafficView()
         case .logs: LogsView()
-        case .settings: SettingsView()
+        case .settings: SettingsView(tab: $settingsTab)
         }
     }
 }
