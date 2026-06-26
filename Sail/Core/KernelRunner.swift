@@ -54,6 +54,11 @@ final class KernelRunner {
     /// auto=true 表示由「异常退出自动重启」触发，不重置崩溃计数；手动/常规启动会清零并取消待重启。
     func start(auto: Bool = false) async {
         guard runState == .stopped else { return }
+        // 立刻占位为 .starting（同步执行，guard 到这里之间没有 await）：否则两个并发的 start() 会双双通过上面的
+        // `.stopped` 判断、各自起一个内核——clash_api 端口已随机化不再撞，但 mixed 入站端口是固定的，
+        // 第二个内核 bind 127.0.0.1:7890 失败 → FATAL → 触发限次自动重启 → 反复刷「address already in use」。
+        // （切 TUN 时尤甚：托盘/概览两个开关 + 托盘重启 + 订阅自动更新 + 看门狗重启都可能并发进来。）
+        runState = .starting
         errorMessage = ""
         if !auto {
             crashCount = 0
@@ -67,12 +72,12 @@ final class KernelRunner {
         }.value
 
         guard FileManager.default.fileExists(atPath: KernelPaths.binary.path) else {
+            runState = .stopped   // 复位占位，否则卡死在 .starting（isBusy 永真）
             errorMessage = "未检测到内核，请先到「设置」安装 sing-box"
             disableSystemProxyIfNeeded()   // 内核起不来：撤掉系统代理，避免指向死端口黑洞断网
             return
         }
 
-        runState = .starting
         logLines.removeAll()
 
         // clash_api 每次启动换一个新的空闲端口：避免重绑上一内核刚优雅退出、仍处 TIME_WAIT 的端口
@@ -106,6 +111,15 @@ final class KernelRunner {
         }
 
         let useHelper = SettingsStore.shared.tunEnabled && HelperManager.isInstalled
+
+        // 用户态启动前，显式停掉可能残留的 root(helper) 内核：关 TUN 是「停 root 内核 → 起用户态内核」，
+        // 两者绑同一个 mixed 端口；若上次停 root 的请求超时/竞态没停干净，新内核 bind 7890 必失败 → 崩溃重启循环。
+        // 上面的 killStrayKernels 按「用户态配置路径」匹配，杀不到跑在 root 副本路径下的内核，故这里经 helper 兜底停一次。
+        // （helper 没装/没在跑时 stopKernel 立即返回，开销可忽略。）
+        if !useHelper, HelperManager.isInstalled {
+            _ = await SailHelperClient.stopKernel()
+        }
+
         do {
             if useHelper {
                 // helper 模式：配置交给 root helper 起 sing-box（TUN 需要 root，本进程不持有内核进程）
