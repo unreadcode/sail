@@ -13,6 +13,11 @@ final class AppUpdater {
 
     nonisolated static let repo = "unreadcode/sail"
 
+    /// 更新窗口的 NSWindow.identifier：它是 .titled 窗口 → canBecomeMain 为 true，
+    /// AppDelegate 的主窗追踪/收托盘若按 canBecomeMain 判定会把它误当主窗接管（关它牵连主窗、下载中被一起 orderOut），
+    /// 故打上这个标记让那些逻辑显式排除它。
+    nonisolated static let windowIdentifier = "sail.update"
+
     struct Release: Equatable {
         let version: String     // 去掉 v 前缀，如 "1.0.1"
         let pageURL: String     // release 页面
@@ -138,6 +143,7 @@ final class AppUpdater {
         // objc_release 命中野指针崩溃（崩溃栈停在 NSApplication run 的 pool drain，与此处无直接调用关系，极隐蔽）。
         // 关掉它，窗口生命周期完全交给 ARC（closeUpdateWindow 里 close() + updateWindow=nil 即可干净释放）。
         w.isReleasedWhenClosed = false
+        w.identifier = NSUserInterfaceItemIdentifier(Self.windowIdentifier)   // 让 AppDelegate 主窗逻辑排除它
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
         w.isMovableByWindowBackground = true

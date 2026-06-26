@@ -108,6 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     /// 任何窗口成为主窗口时，把它记为主窗并挂上关闭拦截 delegate。
     @objc private func attachToWindow(_ note: Notification) {
         guard let w = note.object as? NSWindow, w.canBecomeMain else { return }
+        // 更新窗口也是 .titled(canBecomeMain=true) 但不是主窗：不接管它，
+        // 否则它会顶替 mainWindow、被挂上关闭拦截 delegate，并在 hideToTray 时被一起 orderOut。
+        guard w.identifier?.rawValue != AppUpdater.windowIdentifier else { return }
         mainWindow = w
         if !(w.delegate is AppDelegate) { w.delegate = self }
     }
@@ -302,7 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         MainActor.assumeIsolated { WindowState.shared.contentVisible = true }   // 唤出 → 重建内容
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        let window = mainWindow ?? NSApp.windows.first { $0.canBecomeMain }
+        let window = mainWindow ?? NSApp.windows.first { $0.canBecomeMain && $0.identifier?.rawValue != AppUpdater.windowIdentifier }
         if let window {
             mainWindow = window
             window.delegate = self
@@ -312,8 +315,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
 
     private func hideToTray() {
         // 只隐藏内容窗口：NSApp.windows 还包含状态栏那个窗口，若一并 orderOut 会把托盘图标也藏掉
-        // （「叉掉窗口后托盘也没了」的根因）。canBecomeMain 可滤出真正的内容窗口。
-        NSApp.windows.filter(\.canBecomeMain).forEach { $0.orderOut(nil) }
+        // （「叉掉窗口后托盘也没了」的根因）。canBecomeMain 滤出内容窗口；再排除更新窗口（它也 canBecomeMain，
+        // 否则下载/更新窗会被一起藏掉）。
+        NSApp.windows
+            .filter { $0.canBecomeMain && $0.identifier?.rawValue != AppUpdater.windowIdentifier }
+            .forEach { $0.orderOut(nil) }
         NSApp.setActivationPolicy(.accessory)   // 同时隐藏 Dock 图标
         // 卸载主窗内容：销毁概览等页 → 停每秒重绘 / 轮询、释放离屏渲染图层（核心，治本）。
         MainActor.assumeIsolated { WindowState.shared.contentVisible = false }
