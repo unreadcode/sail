@@ -374,9 +374,18 @@ private struct AddSubscriptionSheet: View {
             }
             field("订阅链接") {
                 TextField("https://…", text: $url, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
                     .lineLimit(2...4)
                     .font(.system(size: 12, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    // macOS 15 的 .roundedBorder 底层是单行 NSTextField，不认 axis:.vertical 多行增长 →
+                    // 长链接被裁成单行截断（macOS 26 已修）；故改用 plain + 自绘圆角边框，两个系统都能换行。
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
+                    )
             }
 
             Button {
@@ -489,9 +498,18 @@ private struct EditSubscriptionSheet: View {
             }
             field("订阅链接") {
                 TextField("https://…", text: $url, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
                     .lineLimit(2...4)
                     .font(.system(size: 12, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    // macOS 15 的 .roundedBorder 底层是单行 NSTextField，不认 axis:.vertical 多行增长 →
+                    // 长链接被裁成单行截断（macOS 26 已修）；故改用 plain + 自绘圆角边框，两个系统都能换行。
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 1)
+                    )
             }
             field("User Agent") {
                 TextField("clash-verge/v2.5.0", text: $ua)
