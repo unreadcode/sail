@@ -144,7 +144,7 @@ final class KernelRunner {
         }
 
         let useHelper = SettingsStore.shared.tunEnabled && HelperManager.isInstalled
-        appendLogs(["[启动·bindprobe-v2] 模式=\(useHelper ? "TUN(root)" : "用户态")  tunEnabled=\(SettingsStore.shared.tunEnabled)  auto=\(auto)  clashApi端口=\(TrafficMonitor.apiPort)"])
+        appendLogs(["[启动·srcfix-v3] 模式=\(useHelper ? "TUN(root)" : "用户态")  tunEnabled=\(SettingsStore.shared.tunEnabled)  auto=\(auto)  clashApi端口=\(TrafficMonitor.apiPort)"])
 
         // 用户态启动前，确保 mixed 端口真正空出来再 spawn。关 TUN 是「停 root 内核 → 起用户态内核」，两者绑同一 7890。
         // 关键：单次 stopKernel 不可靠——TUN 优雅拆除慢 / helper 忙时它会在 root 内核真正退出前就返回甚至超时，

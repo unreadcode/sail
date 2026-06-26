@@ -183,7 +183,9 @@ enum ClashRuleImport {
                 kCFNetworkProxiesHTTPSEnable as String: true, kCFNetworkProxiesHTTPSProxy as String: "127.0.0.1", kCFNetworkProxiesHTTPSPort as String: port,
             ]
         }
-        guard let (data, resp) = try? await URLSession(configuration: cfg).data(for: URLRequest(url: url, timeoutInterval: 30)),
+        let session = URLSession(configuration: cfg)
+        defer { session.finishTasksAndInvalidate() }   // 用完主动关连接，经 7890 时不给它留 TIME_WAIT
+        guard let (data, resp) = try? await session.data(for: URLRequest(url: url, timeoutInterval: 30)),
               (resp as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true,
               let text = String(data: data, encoding: .utf8) else { return false }
 

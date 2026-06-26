@@ -91,7 +91,9 @@ final class GeoData {
                 kCFNetworkProxiesHTTPSPort as String: port,
             ]
         }
-        let (data, resp) = try await URLSession(configuration: cfg).data(for: URLRequest(url: url, timeoutInterval: 30))
+        let session = URLSession(configuration: cfg)
+        defer { session.finishTasksAndInvalidate() }   // 用完主动关连接，经 7890 时不给它留 TIME_WAIT
+        let (data, resp) = try await session.data(for: URLRequest(url: url, timeoutInterval: 30))
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
             throw NSError(domain: "geo", code: (resp as? HTTPURLResponse)?.statusCode ?? -1,
                           userInfo: [NSLocalizedDescriptionKey: "下载失败 HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1)"])

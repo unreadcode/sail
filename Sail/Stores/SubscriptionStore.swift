@@ -339,6 +339,8 @@ final class SubscriptionStore {
         } else {
             session = URLSession.shared
         }
+        // 走代理的自定义会话用完主动关连接（经 7890 时不留 TIME_WAIT）；共享会话不能 invalidate，跳过。
+        defer { if proxyPort != nil { session.finishTasksAndInvalidate() } }
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw KernelError.message("HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1)")

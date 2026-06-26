@@ -50,7 +50,11 @@ final class IPInfo {
                 kCFNetworkProxiesSOCKSEnable as String: false,
             ]
         }
-        guard let (data, resp) = try? await URLSession(configuration: cfg).data(for: URLRequest(url: url)),
+        // 用完主动 invalidate：经 7890 的 keep-alive 连接由客户端主动关闭，TIME_WAIT 落在本机临时端口而非 7890，
+        // 否则这条挂着的连接会在内核重启被杀时给 7890 留下 TIME_WAIT → 新内核 bind 失败（关 TUN 反复重启的源头）。
+        let session = URLSession(configuration: cfg)
+        defer { session.finishTasksAndInvalidate() }
+        guard let (data, resp) = try? await session.data(for: URLRequest(url: url)),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               (obj["status"] as? String) == "success" else { return nil }
