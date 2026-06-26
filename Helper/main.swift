@@ -195,6 +195,14 @@ func handle(_ line: String) -> String {
     }
 }
 
+// MARK: CLI 版本查询
+// app 用 `sail-helper --version` 问内置 helper 的版本（与装着的对比判旧），故必须在起 socket 服务前先应答并退出。
+// 这让 kHelperVersion 成为版本号的唯一来源：app 不再手写期望值，杜绝两处漂移导致每次启动重装弹密码。
+if CommandLine.arguments.contains("--version") {
+    print(kHelperVersion)
+    exit(0)
+}
+
 // MARK: socket 服务
 
 signal(SIGPIPE, SIG_IGN)

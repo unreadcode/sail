@@ -5,8 +5,6 @@ import Foundation
 /// 所有特权命令直接 inline 进 osascript 一次性执行，不落任何临时脚本 → 无 TOCTOU 窗口。
 enum HelperManager {
     static let label = "com.unreadcode.Sail.helper"
-    /// 内嵌 helper 的版本，须与 Helper/main.swift 的 kHelperVersion 一致；装着的版本不符即判旧、自动重装。
-    static let expectedVersion = "3"
     static let helperDest = "/Library/PrivilegedHelperTools/\(label)"
     static let plistDest = "/Library/LaunchDaemons/\(label).plist"
     static let supportDir = "/Library/Application Support/Sail"
@@ -20,10 +18,29 @@ enum HelperManager {
     /// 是否已安装（plist 在位即认为装过；可读，无需 root）。
     nonisolated static var isInstalled: Bool { FileManager.default.fileExists(atPath: plistDest) }
 
-    /// 已安装的 helper 是否过旧（版本不符或旧到不认识 version 命令）。仅在已安装时判断。
+    /// 已安装的 helper 是否过旧：装着的版本（走 socket 问）≠ 内置 helper 的版本（exec 内置二进制问）。
+    /// 版本号唯一来源是 Helper/main.swift 的 kHelperVersion——app 不再手写期望值，杜绝两处漂移导致每次启动重装弹密码。
+    /// 装着的旧到不认识 version 命令时 helperVersion() 返回 nil，nil ≠ 内置版本 → 照样判旧重装。
+    /// 内置二进制读不出版本（缺失/跑不起来）则保守不判旧（重装也会失败，不平白弹授权）。
     static func isStale() async -> Bool {
         guard isInstalled else { return false }
-        return await SailHelperClient.helperVersion() != expectedVersion
+        guard let embedded = await Task.detached(operation: { embeddedHelperVersion() }).value else { return false }
+        return await SailHelperClient.helperVersion() != embedded
+    }
+
+    /// 跑内置 `sail-helper --version` 取其自报版本（后台阻塞调用）；二进制缺失/跑不起来/无输出均返回 nil。
+    nonisolated static func embeddedHelperVersion() -> String? {
+        let path = embeddedHelper
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = ["--version"]
+        let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+        do { try p.run() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        let v = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (v?.isEmpty == false) ? v : nil
     }
 
     /// 安装：弹一次管理员授权（所有命令 inline 进 osascript，不落任何临时脚本 → 无 TOCTOU），装好后验证 helper 能 ping 通。
@@ -67,7 +84,28 @@ enum HelperManager {
         return false
     }
 
-    /// 把（已在用户态校验过的）内核二进制同步到 root-only 路径，供 TUN/helper 以 root 运行。
+    // MARK: root 内核副本随版本刷新
+    // 内核不在 App 内联网更新，改为随新版 App 内置二进制分发。TUN 用的 root 副本同样随之刷新。
+
+    /// TUN 的 root 内核副本是否与 App 内置二进制版本不一致：直接跑两边 `version` 比对（非靠标记，免漂移）。
+    /// root 副本是 0755 root 所有，普通用户可执行、读版本，无需授权；读不出任一侧时保守返回 false（不平白弹授权）。
+    static func kernelNeedsSync() async -> Bool {
+        guard isInstalled, let bundled = bundledSingBox else { return false }
+        let rootPath = singboxDest
+        return await Task.detached {
+            guard let r = SystemInfo.kernelVersion(at: rootPath),
+                  let b = SystemInfo.kernelVersion(at: bundled) else { return false }
+            return r != b
+        }.value
+    }
+
+    /// 把 App 内置内核同步到 root-only 路径（随新版刷新 TUN 用的那份）。需一次管理员授权。
+    static func syncBundledKernel() async -> Bool {
+        guard let bundled = bundledSingBox else { return false }
+        return await installPrivilegedKernel(from: bundled)
+    }
+
+    /// 把内核二进制同步到 root-only 路径，供 TUN/helper 以 root 运行（源为 App 内置 / 已校验的二进制）。
     /// 需一次管理员授权（osascript）——这是信任边界：不让 helper 自动拷用户可写文件以 root 运行（即原 setuid 漏洞）。
     static func installPrivilegedKernel(from src: String) async -> Bool {
         guard FileManager.default.fileExists(atPath: src) else { return false }

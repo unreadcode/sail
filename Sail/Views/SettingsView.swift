@@ -561,15 +561,10 @@ private struct MixinCard: View {
 // MARK: - 内核管理
 
 private struct KernelCard: View {
-    @State private var kernel = KernelManager()
     private let runner = KernelRunner.shared
-
-    private var statusText: String {
-        if !kernel.status.installed { return "未检测到内核，安装后即可启航" }
-        if kernel.updatable { return "发现可用更新" }
-        if kernel.upToDate { return "已是最新版本" }
-        return "内核已安装"
-    }
+    // 内核随 App 内置、随版本发布更新，不在 App 内联网下载。此处仅本地读取展示。
+    @State private var installed = false
+    @State private var version = ""   // 形如 v1.12.0；空表示未知（无法运行二进制）
 
     var body: some View {
         Card {
@@ -586,7 +581,7 @@ private struct KernelCard: View {
                         Text("代理内核").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if kernel.status.installed {
+                    if installed {
                         Button { Task { await runner.restart() } } label: {
                             Image(systemName: "arrow.clockwise").font(.system(size: 12, weight: .semibold))
                         }
@@ -599,114 +594,50 @@ private struct KernelCard: View {
 
                 // 版本主展示
                 VStack(alignment: .leading, spacing: 6) {
-                    if !kernel.status.installed {
-                        Text("未安装")
-                            .font(.system(size: 24, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.secondary)
-                    } else if kernel.updatable {
-                        HStack(spacing: 10) {
-                            Text("v\(kernel.status.version)")
-                                .font(.system(size: 16, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                                .strikethrough()
-                            Image(systemName: "arrow.right").foregroundStyle(.secondary)
-                            Text("v\(kernel.latest)")
-                                .font(.system(size: 24, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(Color.accentColor)
-                        }
-                    } else {
-                        Text("v\(kernel.status.version.isEmpty ? "—" : kernel.status.version)")
-                            .font(.system(size: 24, weight: .semibold, design: .monospaced))
-                    }
-                    Text(statusText).font(.subheadline).foregroundStyle(.secondary)
+                    Text(installed ? (version.isEmpty ? "—" : version) : "未安装")
+                        .font(.system(size: 24, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(installed ? .primary : .secondary)
+                    Text(installed ? "内核随 App 内置，更新随新版本发布" : "未检测到内核，请重新安装 App")
+                        .font(.subheadline).foregroundStyle(.secondary)
                 }
 
                 // 元信息
-                VStack(spacing: 8) {
-                    metaRow("最新版本", kernel.latest.isEmpty ? "—" : "v\(kernel.latest)")
-                    if kernel.status.installed {
-                        metaRow("安装路径", kernel.status.path)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background(Color(nsColor: .quaternaryLabelColor).opacity(0.25),
-                            in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-
-                if kernel.busy {
+                if installed {
                     VStack(spacing: 8) {
-                        HStack {
-                            Label(kernel.statusMessage.isEmpty ? "处理中 …" : kernel.statusMessage,
-                                  systemImage: "arrow.down.circle")
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Text("\(Int(kernel.progress * 100))%")
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .foregroundStyle(Color.accentColor)
-                        }
-                        .font(.caption)
-                        ProgressView(value: kernel.progress).tint(Color.accentColor)
+                        metaRow("安装路径", KernelPaths.binary.path)
                     }
-                } else if !kernel.errorMessage.isEmpty {
-                    Label(kernel.errorMessage, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal, 10).padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                }
-
-                // 操作
-                HStack(spacing: 8) {
-                    if !kernel.status.installed {
-                        Button { Task { await kernel.install() } } label: {
-                            Label(kernel.latest.isEmpty ? "安装内核" : "安装 v\(kernel.latest)", systemImage: "arrow.down.circle")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(kernel.busy)
-                    } else if kernel.updatable {
-                        Button { Task { await kernel.install() } } label: {
-                            Label("更新到 v\(kernel.latest)", systemImage: "arrow.triangle.2.circlepath")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(kernel.busy)
-                    } else {
-                        // 已安装且无可用更新：提供重新安装（停内核→下载最新→换新→重启），用于损坏修复 / 强制刷新
-                        Button { Task { await kernel.reinstall() } } label: {
-                            Label("重新安装", systemImage: "arrow.triangle.2.circlepath")
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(kernel.busy)
-                    }
-                    Button("检查更新") { Task { await kernel.refresh() } }
-                        .disabled(kernel.busy)
-                    Spacer()
-                    if kernel.status.installed {
-                        Button(role: .destructive) { Task { await kernel.remove() } } label: {
-                            Label("卸载", systemImage: "trash")
-                        }
-                        .disabled(kernel.busy)
-                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Color(nsColor: .quaternaryLabelColor).opacity(0.25),
+                                in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 }
             }
         }
-        .task { await kernel.refresh() }
+        .task { await probe() }
+    }
+
+    /// 本地探测内核：二进制是否就位 + 跑 `version` 取版本号。不触网。
+    private func probe() async {
+        let exists = FileManager.default.fileExists(atPath: KernelPaths.binary.path)
+        let v = exists ? await Task.detached { SystemInfo.kernelVersion() }.value : nil
+        installed = exists
+        version = v ?? ""
     }
 
     private var statusPill: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(kernel.status.installed ? Color.accentColor : Color.secondary)
+                .fill(installed ? Color.accentColor : Color.secondary)
                 .frame(width: 6, height: 6)
-            Text(kernel.status.installed ? "运行就绪" : "未安装")
+            Text(installed ? "运行就绪" : "未安装")
                 .font(.caption.weight(.medium))
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
         .background(
-            Capsule().fill(kernel.status.installed ? Color.accentColor.opacity(0.12) : Color(nsColor: .quaternaryLabelColor).opacity(0.4))
+            Capsule().fill(installed ? Color.accentColor.opacity(0.12) : Color(nsColor: .quaternaryLabelColor).opacity(0.4))
         )
-        .foregroundStyle(kernel.status.installed ? Color.accentColor : Color.secondary)
+        .foregroundStyle(installed ? Color.accentColor : Color.secondary)
     }
 
     private func metaRow(_ label: String, _ value: String) -> some View {

@@ -90,10 +90,14 @@ final class KernelRunner {
                     return
                 }
             } else if !auto, !helperStaleChecked {
-                // helper 过期检查每个会话只做一次（首次启动时）：避免每次切订阅/切节点的 restart
-                // 都触发 isStale→重装→弹管理员授权。仅用户主动启动时检查，崩溃自动重启不打扰。
+                // helper / root 内核过期检查每个会话只做一次（首次启动时）：避免每次切订阅/切节点的 restart
+                // 都弹管理员授权。仅用户主动启动时检查，崩溃自动重启不打扰。
                 helperStaleChecked = true
-                if await HelperManager.isStale() { _ = await HelperManager.install() }   // 失败不致命，继续用旧 helper
+                if await HelperManager.isStale() {
+                    _ = await HelperManager.install()          // 重装 helper 顺带把内置内核刷到 root（失败不致命，继续用旧的）
+                } else if await HelperManager.kernelNeedsSync() {
+                    _ = await HelperManager.syncBundledKernel() // helper 没过期但 root 内核比内置旧：随新版刷到 root
+                }
             }
         }
 
@@ -200,17 +204,29 @@ final class KernelRunner {
         }
     }
 
-    /// 若工作目录还没有内核，则从 app 包内置的二进制拷贝过来（离线可用）。
+    /// 从 app 包内置的二进制把内核播种 / 刷新到工作目录（离线可用）。
+    /// 内核不在 App 内联网更新，改为「随新版 App 内置的二进制」分发：同一 App 版本只播种一次，
+    /// App 版本一变（升级/降级）就用内置副本覆盖刷新，保证用户态内核始终 = 当前 App 内置的那份。
+    /// 读不出内置二进制时不动已装内核（dev 构建漏跑 fetch-kernel.sh 不至于把内核误删）。
     nonisolated static func seedKernelFromBundleIfNeeded() {
+        guard let bundled = Bundle.main.url(forResource: "sing-box", withExtension: nil) else { return }
         let dest = KernelPaths.binary
-        guard !FileManager.default.fileExists(atPath: dest.path),
-              let bundled = Bundle.main.url(forResource: "sing-box", withExtension: nil) else { return }
+        let exists = FileManager.default.fileExists(atPath: dest.path)
+
+        // 用 App 版本号当「内核可能变了」的廉价信号（内核只随发版变），免得每次重启都跑两次 `version` 子进程比对。
+        let appVer = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+        let key = "seededKernelAppVersion"
+        if exists, UserDefaults.standard.string(forKey: key) == appVer { return }
+
         do {
             try FileManager.default.createDirectory(at: KernelPaths.kernelDir, withIntermediateDirectories: true)
+            // 覆盖刷新：此刻用户态内核未运行（start() 已 guard .stopped），即便有孤儿在跑也是 unlink 旧 inode、不影响其退出
+            if exists { try FileManager.default.removeItem(at: dest) }
             try FileManager.default.copyItem(at: bundled, to: dest)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dest.path)
+            UserDefaults.standard.set(appVer, forKey: key)
         } catch {
-            // 尽力而为
+            // 尽力而为：失败则保留旧内核（若有）
         }
     }
 

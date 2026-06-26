@@ -39,9 +39,8 @@ enum SystemInfo {
         return kr == KERN_SUCCESS ? Double(info.phys_footprint) : 0
     }
 
-    /// 运行内核二进制取版本号（阻塞，后台调用）。
-    nonisolated static func kernelVersion() -> String? {
-        let path = KernelPaths.binary.path
+    /// 运行内核二进制取版本号（阻塞，后台调用）。默认取已安装的用户态内核，可传路径比对其它副本。
+    nonisolated static func kernelVersion(at path: String = KernelPaths.binary.path) -> String? {
         guard FileManager.default.fileExists(atPath: path) else { return nil }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
