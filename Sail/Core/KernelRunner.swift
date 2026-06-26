@@ -112,12 +112,21 @@ final class KernelRunner {
 
         let useHelper = SettingsStore.shared.tunEnabled && HelperManager.isInstalled
 
-        // 用户态启动前，显式停掉可能残留的 root(helper) 内核：关 TUN 是「停 root 内核 → 起用户态内核」，
-        // 两者绑同一个 mixed 端口；若上次停 root 的请求超时/竞态没停干净，新内核 bind 7890 必失败 → 崩溃重启循环。
-        // 上面的 killStrayKernels 按「用户态配置路径」匹配，杀不到跑在 root 副本路径下的内核，故这里经 helper 兜底停一次。
-        // （helper 没装/没在跑时 stopKernel 立即返回，开销可忽略。）
+        // 用户态启动前，确保 mixed 端口真正空出来再 spawn。关 TUN 是「停 root 内核 → 起用户态内核」，两者绑同一 7890。
+        // 关键：单次 stopKernel 不可靠——TUN 优雅拆除慢 / helper 忙时它会在 root 内核真正退出前就返回甚至超时，
+        // 且 handleHelperCrash 误判崩溃时只把状态置 stopped、并没真停掉内核。此时立刻 bind 7890 必 address already in use
+        // → 崩溃重启循环（用户实测：关 TUN 内核反复重启）。故这里盯端口这个 ground truth：仍被占就催 helper 再停，
+        // 直到空出或到上限（v6 helper 的 stop 会按可执行路径把跟踪不到的 root 孤儿也一并扫掉）。
         if !useHelper, HelperManager.isInstalled {
-            _ = await SailHelperClient.stopKernel()
+            let port = SettingsStore.shared.mixedPort
+            var guardN = 0
+            while guardN < 15 {
+                _ = await SailHelperClient.stopKernel()
+                guardN += 1
+                let stillBound = await Task.detached(priority: .utility, operation: { Self.portListening(port) }).value
+                if !stillBound || runState != .starting { break }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
         }
 
         do {
