@@ -37,22 +37,55 @@ final class KernelRunner {
     private var autoRestartTask: Task<Void, Never>?
     private var helperWatchTask: Task<Void, Never>?   // helper 模式：轮询内核存活，崩溃则重启
     private var helperLogTask: Task<Void, Never>?      // helper 模式：tail 内核日志文件
+    private var lifecycleTask: Task<Void, Never>?      // 串行化 start/stop/restart：一次只跑一个，杜绝快速开关 TUN 时两个内核抢 7890
     private static let maxAutoRestarts = 3
 
     private init() {}
 
     // MARK: 动作
 
+    /// 串行化所有生命周期操作：上一个 start/stop/restart 完整跑完，下一个才开始。
+    /// 杜绝「快速开关 TUN 时两次 restart 重叠 → 一个起 root 内核、一个起用户态内核，两者抢同一个 7890」的竞态。
+    /// 内部 core 之间互调（restartCore→stop/startCore）不再经此，避免自我等待死锁。
+    private func serialized(_ op: @MainActor @escaping () async -> Void) async {
+        let prev = lifecycleTask
+        let task = Task { @MainActor in
+            await prev?.value
+            await op()
+        }
+        lifecycleTask = task
+        await task.value
+    }
+
     func toggle() async {
-        if runState == .stopped {
-            await start()
-        } else {
-            await stop()
+        await serialized {
+            if self.runState == .stopped { await self.startCore() } else { await self.stopCore() }
         }
     }
 
-    /// auto=true 表示由「异常退出自动重启」触发，不重置崩溃计数；手动/常规启动会清零并取消待重启。
     func start(auto: Bool = false) async {
+        await serialized { await self.startCore(auto: auto) }
+    }
+
+    func stop() async {
+        await serialized { await self.stopCore() }
+    }
+
+    /// 重启内核（切换节点等场景）：停止后等状态落定再启动。
+    func restart() async {
+        await serialized { await self.restartCore() }
+    }
+
+    private func restartCore() async {
+        await stopCore()
+        for _ in 0..<40 where runState != .stopped {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        await startCore()
+    }
+
+    /// auto=true 表示由「异常退出自动重启」触发，不重置崩溃计数；手动/常规启动会清零并取消待重启。
+    private func startCore(auto: Bool = false) async {
         guard runState == .stopped else { return }
         // 立刻占位为 .starting（同步执行，guard 到这里之间没有 await）：否则两个并发的 start() 会双双通过上面的
         // `.stopped` 判断、各自起一个内核——clash_api 端口已随机化不再撞，但 mixed 入站端口是固定的，
@@ -111,7 +144,7 @@ final class KernelRunner {
         }
 
         let useHelper = SettingsStore.shared.tunEnabled && HelperManager.isInstalled
-        appendLogs(["[启动] 模式=\(useHelper ? "TUN(root)" : "用户态")  tunEnabled=\(SettingsStore.shared.tunEnabled)  auto=\(auto)  clashApi端口=\(TrafficMonitor.apiPort)"])
+        appendLogs(["[启动·串行化v1] 模式=\(useHelper ? "TUN(root)" : "用户态")  tunEnabled=\(SettingsStore.shared.tunEnabled)  auto=\(auto)  clashApi端口=\(TrafficMonitor.apiPort)"])
 
         // 用户态启动前，确保 mixed 端口真正空出来再 spawn。关 TUN 是「停 root 内核 → 起用户态内核」，两者绑同一 7890。
         // 关键：单次 stopKernel 不可靠——TUN 优雅拆除慢 / helper 忙时它会在 root 内核真正退出前就返回甚至超时，
@@ -284,7 +317,7 @@ final class KernelRunner {
         usleep(200_000)
     }
 
-    func stop() async {
+    private func stopCore() async {
         autoRestartTask?.cancel(); autoRestartTask = nil   // 用户主动停止，取消待重启
         helperWatchTask?.cancel(); helperWatchTask = nil   // 停监测，避免把主动停止误判为崩溃
         helperLogTask?.cancel(); helperLogTask = nil
@@ -316,24 +349,18 @@ final class KernelRunner {
         // 最终状态由 terminationHandler 落定
     }
 
-    /// 重启内核（切换节点等场景）：停止后等状态落定再启动。
-    func restart() async {
-        await stop()
-        for _ in 0..<40 where runState != .stopped {
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-        await start()
-    }
-
     /// 仅当「现在生成的配置」与「正在运行的配置」不同才重启；相同则原地不动。
     /// 用于订阅更新 / 切换订阅等场景：很多更新其实没改动节点或规则，无谓重启只会徒增断流与噪声。
+    /// 整段走串行化：判定与重启之间不被别的生命周期操作插入。
     func restartIfConfigChanged() async {
-        guard isRunning else { return }
-        if let now = normalizedConfig(), now == lastAppliedConfig {
-            appendLogs(["配置无变化，跳过重启"])
-            return
+        await serialized {
+            guard self.isRunning else { return }
+            if let now = self.normalizedConfig(), now == self.lastAppliedConfig {
+                self.appendLogs(["配置无变化，跳过重启"])
+                return
+            }
+            await self.restartCore()
         }
-        await restart()
     }
 
     /// 当前配置的归一化 JSON（键排序，保证同一份配置每次序列化结果一致，可直接字符串比对）。
