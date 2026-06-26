@@ -111,21 +111,34 @@ final class KernelRunner {
         }
 
         let useHelper = SettingsStore.shared.tunEnabled && HelperManager.isInstalled
+        appendLogs(["[启动] 模式=\(useHelper ? "TUN(root)" : "用户态")  tunEnabled=\(SettingsStore.shared.tunEnabled)  auto=\(auto)  clashApi端口=\(TrafficMonitor.apiPort)"])
 
         // 用户态启动前，确保 mixed 端口真正空出来再 spawn。关 TUN 是「停 root 内核 → 起用户态内核」，两者绑同一 7890。
         // 关键：单次 stopKernel 不可靠——TUN 优雅拆除慢 / helper 忙时它会在 root 内核真正退出前就返回甚至超时，
         // 且 handleHelperCrash 误判崩溃时只把状态置 stopped、并没真停掉内核。此时立刻 bind 7890 必 address already in use
         // → 崩溃重启循环（用户实测：关 TUN 内核反复重启）。故这里盯端口这个 ground truth：仍被占就催 helper 再停，
         // 直到空出或到上限（v6 helper 的 stop 会按可执行路径把跟踪不到的 root 孤儿也一并扫掉）。
-        if !useHelper, HelperManager.isInstalled {
+        if !useHelper {
             let port = SettingsStore.shared.mixedPort
             var guardN = 0
-            while guardN < 15 {
-                _ = await SailHelperClient.stopKernel()
+            while guardN < 20 {
+                // 两路都停：stopKernel 停 root 内核（v6 helper 含按路径扫孤儿）；killStrayKernels 杀用户态残留
+                // （按用户态配置路径 pkill）——占着 7890 的可能是其中任一种，缺一就放不掉端口。
+                if HelperManager.isInstalled { _ = await SailHelperClient.stopKernel() }
+                await Task.detached(priority: .utility) { Self.killStrayKernels() }.value
                 guardN += 1
                 let stillBound = await Task.detached(priority: .utility, operation: { Self.portListening(port) }).value
-                if !stillBound || runState != .starting { break }
-                try? await Task.sleep(for: .milliseconds(200))
+                if !stillBound { break }
+                if runState != .starting { return }
+                if guardN == 1 || guardN % 4 == 0 {
+                    appendLogs(["[启动] mixed 端口 \(port) 仍被占用，已催停第 \(guardN) 次，继续等待释放…"])
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            if await Task.detached(priority: .utility, operation: { Self.portListening(port) }).value {
+                appendLogs(["[启动] ⚠️ 等待 \(guardN) 轮后 mixed 端口 \(port) 仍被占用——大概率有别的进程占着它；本次启动可能失败。"])
+            } else if guardN > 1 {
+                appendLogs(["[启动] mixed 端口 \(port) 已释放（等了 \(guardN) 轮），继续启动内核。"])
             }
         }
 
@@ -423,6 +436,7 @@ final class KernelRunner {
     /// helper 内核崩溃处理：复用直跑模式的限次退避自动重启逻辑。
     private func handleHelperCrash() {
         guard ranViaHelper, runState == .running else { return }
+        appendLogs(["[监测] 连续探测失败，判定 TUN(root) 内核已退出 → 进入自动重启（注意：若此时是误判，root 内核其实还活着，会与随后启动的内核抢 7890）"])
         let uptime = startedAt.map { Date().timeIntervalSince($0) } ?? 0
         ranViaHelper = false
         startedAt = nil
