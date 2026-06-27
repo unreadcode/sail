@@ -713,6 +713,21 @@ final class KernelRunner {
             dnsServers.append(["tag": "local-dns", "type": "https", "server": "223.5.5.5"])
             dns["servers"] = dnsServers
             dns["final"] = hasProxy ? "remote-dns" : "local-dns"
+
+            // DNS 分流（关键）：让国内域名走 local-dns（223.5.5.5，直连）解析。否则所有 DNS 都
+            // 兜底经代理的海外 remote-dns —— 国内域名既白花一次 ~200ms 海外往返，又被解析成海外
+            // CDN IP，再被路由判直连 → 直连一个绕远路的海外 IP，连接页显示「直连」却很慢。
+            // 用 app 内置的 geosite-cn（齐全的中国域名表）专给 DNS 判定，与路由分流的 rule_set 解耦：
+            // 不管订阅自带规则用什么组名分流（机场导入分支常是 sub-chinamaxdomain 等），只要域名属
+            // 中国，解析就走国内 DNS。route.rule_set 缺 geosite-cn（导入分支）则补一个 local 定义供引用。
+            if hasProxy, let geositeCN = GeoData.localRuleSet("geosite-cn") {
+                var sets = (route["rule_set"] as? [[String: Any]]) ?? []
+                if !sets.contains(where: { ($0["tag"] as? String) == "geosite-cn" }) {
+                    sets.append(["type": "local", "tag": "geosite-cn", "format": "binary", "path": geositeCN.path])
+                    route["rule_set"] = sets
+                }
+                dns["rules"] = [["rule_set": ["geosite-cn"], "server": "local-dns"]]
+            }
         }
         config["dns"] = dns
 
